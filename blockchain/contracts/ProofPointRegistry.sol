@@ -1,31 +1,66 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.20;
 
-contract ProofPointRegistry {
-    // Event jo emit hoga jab bhi naya proof blockhcain par save hoga
-    event ProofAnchored(bytes32 indexed proofHash, uint256 timestamp, address submitter);
+contract ProofRegistry {
+    address public owner;
 
-    // Ye mapping (dictionary) hash ko store karegi
-    mapping(bytes32 => uint256) public proofs;
-
-    // 1. Function: Hash ko blockchain par save karna
-    function storeProof(bytes32 _proofHash) public {
-        // Check karna ki ye proof pehle se toh nahi hai
-        require(proofs[_proofHash] == 0, "Proof already exists on blockchain!");
-        
-        // Block ka current time save karna
-        proofs[_proofHash] = block.timestamp;
-        
-        // Log emit karna
-        emit ProofAnchored(_proofHash, block.timestamp, msg.sender);
+    struct EventRecord {
+        bytes32 merkleRoot;
+        uint256 totalAttendees;
+        uint256 anchoredAt;
     }
 
-    // 2. Function: Check karna ki hash exist karta hai ya nahi (Proof Verification ke liye)
-    function verifyProof(bytes32 _proofHash) public view returns (bool exists, uint256 timestamp) {
-        uint256 time = proofs[_proofHash];
-        if (time > 0) {
-            return (true, time);
+    // eventId (string or bytes32) => EventRecord
+    mapping(string => EventRecord) public eventRecords;
+
+    event EventAnchored(
+        string indexed eventId,
+        bytes32 indexed merkleRoot,
+        uint256 totalAttendees,
+        uint256 timestamp
+    );
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    /// @notice Anchors the Merkle root of all verified attendees for an event
+    function anchorEventBatch(
+        string memory eventId,
+        bytes32 merkleRoot,
+        uint256 totalAttendees
+    ) external {
+        require(eventRecords[eventId].merkleRoot == bytes32(0), "Event already anchored");
+        require(totalAttendees > 0, "No attendees to anchor");
+
+        eventRecords[eventId] = EventRecord({
+            merkleRoot: merkleRoot,
+            totalAttendees: totalAttendees,
+            anchoredAt: block.timestamp
+        });
+
+        emit EventAnchored(eventId, merkleRoot, totalAttendees, block.timestamp);
+    }
+
+    /// @notice Verifies whether a specific attendee hash belongs to the event's anchored root
+    function verifyProofMembership(
+        string memory eventId,
+        bytes32 leafHash,
+        bytes32[] memory proof
+    ) external view returns (bool) {
+        bytes32 root = eventRecords[eventId].merkleRoot;
+        require(root != bytes32(0), "Event not anchored yet");
+
+        bytes32 computedHash = leafHash;
+        for (uint256 i = 0; i < proof.length; i++) {
+            bytes32 proofElement = proof[i];
+            if (computedHash <= proofElement) {
+                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+            } else {
+                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+            }
         }
-        return (false, 0);
+
+        return computedHash == root;
     }
 }

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Blockchain build & cache
+blockchain/artifacts/
+blockchain/cache/

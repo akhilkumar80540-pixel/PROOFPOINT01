@@ -1,31 +1,26 @@
-import { ethers } from "ethers";
-import fs from "fs";
+import fs from 'fs';
+import path from 'path';
+import { ethers } from 'ethers';
 
 async function main() {
   console.log("Connecting to local blockchain...");
-  // 1. Connect to the local Hardhat Node we just started
+
   const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+  const signer = await provider.getSigner(0);
 
-  // 2. Use Hardhat's default Account #0 private key to deploy
-  const privateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-  const wallet = new ethers.Wallet(privateKey, provider);
+  // Correct path to ProofRegistry.json
+  const artifactPath = path.resolve('./blockchain/artifacts/blockchain/contracts/ProofPointRegistry.sol/ProofRegistry.json');
+  const contractJson = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
 
-  // 3. Read the compiled contract details (ABI and Bytecode)
-  console.log("Reading compiled contract artifacts...");
-  const artifactPath = "./blockchain/artifacts/blockchain/contracts/ProofPointRegistry.sol/ProofPointRegistry.json";
-  const artifactJson = fs.readFileSync(artifactPath, "utf8");
-  const artifact = JSON.parse(artifactJson);
-
-  // 4. Deploy the contract
-  console.log("Deploying ProofPointRegistry...");
-  const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, wallet);
+  const factory = new ethers.ContractFactory(contractJson.abi, contractJson.bytecode, signer);
   const contract = await factory.deploy();
-  
-  // 5. Wait for it to be confirmed on our local blockchain
   await contract.waitForDeployment();
 
-  const address = await contract.getAddress();
-  console.log("🎉 SUCCESS! Contract deployed perfectly at address:", address);
+  const deployedAddress = await contract.getAddress();
+  console.log(`ProofRegistry deployed to: ${deployedAddress}`);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error("Deployment failed:", err);
+  process.exit(1);
+});

@@ -1,179 +1,129 @@
 import { useState } from 'react';
+import { ethers } from 'ethers';
 import { db } from '../firebase/config';
 import { collection, query, where, getDocs } from 'firebase/firestore';
-import { verifyProofOnChain } from '../utils/blockchainUtils';
-import { ShieldCheck, Search, Loader2, XCircle, CheckCircle2, User, Hash, Clock, MapPin } from 'lucide-react';
+import { generateProof, getLeafHash } from '../utils/merkleUtils';
+import { CheckCircle2, XCircle, Search, Loader2 } from 'lucide-react';
+
+const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ABI = [
+  "function verifyProofMembership(string memory eventId, bytes32 leafHash, bytes32[] memory proof) external view returns (bool)"
+];
 
 export default function VerifyProof() {
   const [proofIdInput, setProofIdInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [proofData, setProofData] = useState(null);
-  const [onChainStatus, setOnChainStatus] = useState(null);
-  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
 
   const handleVerify = async (e) => {
     e.preventDefault();
     if (!proofIdInput.trim()) return;
 
     setLoading(true);
-    setError('');
-    setProofData(null);
-    setOnChainStatus(null);
+    setResult(null);
 
     try {
-      // 1. Firebase se proof fetch karein
-      const q = query(
-        collection(db, "proofs"), 
-        where("proofId", "==", proofIdInput.trim().toUpperCase())
-      );
-      const snapshot = await getDocs(q);
+      // 1. Firebase se proof document dhoondhein
+      const q = query(collection(db, "proofs"), where("proofId", "==", proofIdInput.trim()));
+      const snap = await getDocs(q);
 
-      if (snapshot.empty) {
-        setError("Proof ID not found in database.");
+      if (snap.empty) {
+        setResult({ verified: false, message: "Proof ID not found in database." });
         setLoading(false);
         return;
       }
 
-      const data = snapshot.docs[0].data();
-      setProofData(data);
+      const record = { id: snap.docs[0].id, ...snap.docs[0].data() };
 
-      // 2. Local Smart Contract se check karein
-      try {
-        const chainRes = await verifyProofOnChain(data.proofHash);
-        setOnChainStatus(chainRes);
-      } catch (err) {
-        console.error("Smart contract read failed:", err);
-        setOnChainStatus({ exists: false, error: "Could not query smart contract" });
+      if (!record.blockchainTxHash) {
+        setResult({ verified: false, message: "Record found but not anchored on blockchain yet." });
+        setLoading(false);
+        return;
       }
 
+      // 2. Us event ke saare records fetch karein taaki exact tree reconstruct ho sake
+      const eventProofsQuery = query(collection(db, "proofs"), where("eventId", "==", record.eventId));
+      const eventSnap = await getDocs(eventProofsQuery);
+      const allAttendees = eventSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      // Batch match: wahi attendees filter karein jo is transaction me anchored hue the
+      const batchAttendees = allAttendees.filter(a => a.blockchainTxHash === record.blockchainTxHash);
+
+      // 3. Merkle proof construct karein
+      const proofData = generateProof(batchAttendees, record);
+      if (!proofData) {
+        throw new Error("Unable to reconstruct Merkle tree.");
+      }
+
+      // 4. Contract se query karein (bina metamask login ke, direct provider)
+      const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
+
+      const isValid = await contract.verifyProofMembership(
+        record.eventId,
+        proofData.leaf,
+        proofData.proof
+      );
+
+      setResult({
+        verified: isValid,
+        data: record,
+        txHash: record.blockchainTxHash,
+        merkleRoot: proofData.root,
+        message: isValid ? "Cryptographically Verified On-Chain!" : "Blockchain rejected the proof!"
+      });
     } catch (err) {
       console.error(err);
-      setError("An error occurred during verification.");
+      setResult({ verified: false, message: "Verification failed: " + err.message });
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-10">
-      <div className="text-center mb-8">
-        <ShieldCheck className="h-12 w-12 text-primary mx-auto mb-2" />
-        <h1 className="text-3xl font-bold text-gray-900">Decentralized Proof Verifier</h1>
-        <p className="text-gray-500 text-sm mt-1">Validate student attendance authenticity against Ethereum smart contract state</p>
-      </div>
+    <div className="max-w-xl mx-auto px-4 py-12">
+      <h1 className="text-2xl font-bold text-gray-900 mb-2">Verify Attendance Proof</h1>
+      <p className="text-sm text-gray-500 mb-6">Enter a student's Proof ID to verify existence on Ethereum.</p>
 
-      {/* Search Input */}
-      <form onSubmit={handleVerify} className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex gap-2 mb-8">
-        <div className="relative flex-1">
-          <Search className="w-5 h-5 text-gray-400 absolute left-3 top-3" />
-          <input
-            type="text"
-            required
-            value={proofIdInput}
-            onChange={(e) => setProofIdInput(e.target.value)}
-            placeholder="Enter Proof ID (e.g. LP-W7LGOS)"
-            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg uppercase font-mono text-sm focus:ring-2 focus:ring-primary focus:outline-none"
-          />
-        </div>
+      <form onSubmit={handleVerify} className="flex gap-2 mb-6">
+        <input
+          type="text"
+          placeholder="e.g. PRF-XXXXXX"
+          value={proofIdInput}
+          onChange={(e) => setProofIdInput(e.target.value)}
+          className="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+        />
         <button
           type="submit"
           disabled={loading}
-          className="bg-primary hover:bg-indigo-700 text-white font-medium px-6 py-2.5 rounded-lg text-sm flex items-center gap-2 disabled:bg-indigo-400"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
         >
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          Verify
         </button>
       </form>
 
-      {/* Error Message */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 p-4 rounded-xl text-center text-red-600 font-medium text-sm mb-6 flex items-center justify-center gap-2">
-          <XCircle className="w-5 h-5" /> {error}
-        </div>
-      )}
-
-      {/* Verification Result Card */}
-      {proofData && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          {/* Header Banner */}
-          <div className="bg-green-50 border-b border-green-200 p-6 flex items-center gap-3">
-            <CheckCircle2 className="w-8 h-8 text-green-600 flex-shrink-0" />
-            <div>
-              <h2 className="text-lg font-bold text-green-900">Valid Cryptographic Attendance Proof</h2>
-              <p className="text-xs text-green-700">Records match cryptographic signatures and geofence standards.</p>
-            </div>
+      {result && (
+        <div className={`p-5 rounded-xl border ${result.verified ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+          <div className="flex items-center gap-2 mb-3">
+            {result.verified ? (
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+            ) : (
+              <XCircle className="w-5 h-5 text-red-600" />
+            )}
+            <span className={`font-semibold ${result.verified ? 'text-green-800' : 'text-red-800'}`}>
+              {result.message}
+            </span>
           </div>
 
-          <div className="p-6 space-y-6">
-            {/* Student & Event Identity */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
-                <span className="text-xs text-gray-500 flex items-center gap-1 mb-1">
-                  <User className="w-3.5 h-3.5" /> Student Name
-                </span>
-                <span className="font-bold text-gray-900">{proofData.studentName || 'N/A'}</span>
-              </div>
-
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
-                <span className="text-xs text-gray-500 flex items-center gap-1 mb-1">
-                  <Hash className="w-3.5 h-3.5" /> Roll Number
-                </span>
-                <span className="font-bold font-mono text-gray-900">{proofData.rollNumber || 'N/A'}</span>
-              </div>
-
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
-                <span className="text-xs text-gray-500 flex items-center gap-1 mb-1">
-                  <Clock className="w-3.5 h-3.5" /> Timestamp
-                </span>
-                <span className="font-semibold text-gray-900 text-sm">
-                  {new Date(proofData.timestamp).toLocaleString()}
-                </span>
-              </div>
-
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
-                <span className="text-xs text-gray-500 flex items-center gap-1 mb-1">
-                  <MapPin className="w-3.5 h-3.5" /> Geofence Verification
-                </span>
-                <span className="font-semibold text-green-600 text-sm">
-                  Verified ({proofData.distanceMeters}m from origin)
-                </span>
-              </div>
+          {result.data && (
+            <div className="text-xs space-y-1.5 font-mono text-gray-700 border-t pt-3 mt-3 border-gray-200">
+              <p><strong>Student:</strong> {result.data.studentName} ({result.data.rollNumber})</p>
+              <p><strong>Event ID:</strong> {result.data.eventId}</p>
+              <p><strong>Tx Hash:</strong> {result.txHash}</p>
+              <p><strong>Merkle Root:</strong> {result.merkleRoot}</p>
             </div>
-
-            {/* Smart Contract Blockchain Confirmation */}
-            <div className="border border-indigo-100 bg-indigo-50/50 p-4 rounded-xl">
-              <span className="text-xs font-bold text-indigo-900 uppercase block mb-2">
-                On-Chain Verification Status
-              </span>
-              
-              {onChainStatus?.exists ? (
-                <div className="space-y-1">
-                  <p className="text-sm font-semibold text-green-700 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4" /> Immutable Record Confirmed on Ethereum
-                  </p>
-                  <p className="text-xs text-gray-600">
-                    Smart Contract Store Timestamp: {new Date(onChainStatus.blockTimestamp * 1000).toLocaleString()}
-                  </p>
-                  {proofData.blockchainTxHash && (
-                    <div className="text-xs font-mono text-indigo-700 break-all pt-1">
-                      Tx: {proofData.blockchainTxHash}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-amber-700 font-medium">
-                  Verified in database, but not yet anchored on-chain.
-                </p>
-              )}
-            </div>
-
-            {/* SHA-256 Digest */}
-            <div>
-              <span className="text-xs text-gray-500 block mb-1">Cryptographic Fingerprint (SHA-256)</span>
-              <div className="bg-gray-900 text-green-400 p-3 rounded-lg font-mono text-xs break-all">
-                {proofData.proofHash}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>

@@ -1,14 +1,36 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { db } from '../firebase/config';
-import { collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
-import { Users, Download, ShieldCheck, Clock, MapPin, ArrowLeft, Loader2, ExternalLink } from 'lucide-react';
+import { collection, query, where, getDocs, onSnapshot, doc, updateDoc } from 'firebase/firestore';
+import { 
+  Users, 
+  Download, 
+  ShieldCheck, 
+  Clock, 
+  MapPin, 
+  ArrowLeft, 
+  Loader2, 
+  ExternalLink,
+  Layers
+} from 'lucide-react';
+import { ethers } from 'ethers';
+import { buildMerkleTree } from '../utils/merkleUtils';
+
+// ==========================================
+// CONTRACT ADDRESS & ABI CONFIGURATION
+// ==========================================
+const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ABI = [
+  "function anchorEventBatch(string memory eventId, bytes32 merkleRoot, uint256 totalAttendees) external",
+  "function verifyProofMembership(string memory eventId, bytes32 leafHash, bytes32[] memory proof) external view returns (bool)"
+];
 
 export default function EventAttendance() {
   const { eventId } = useParams();
   const [eventData, setEventData] = useState(null);
   const [attendees, setAttendees] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [anchoring, setAnchoring] = useState(false);
 
   useEffect(() => {
     // 1. Fetch Event Info
@@ -29,7 +51,6 @@ export default function EventAttendance() {
     const proofsQuery = query(collection(db, "proofs"), where("eventId", "==", eventId));
     const unsubscribe = onSnapshot(proofsQuery, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Sort newest first
       list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       setAttendees(list);
       setLoading(false);
@@ -67,6 +88,57 @@ export default function EventAttendance() {
     document.body.removeChild(link);
   };
 
+  // Automated Batch Merkle Anchor Function
+  const handleBatchAnchor = async () => {
+    const pendingAttendees = attendees.filter(a => !a.blockchainTxHash);
+
+    if (pendingAttendees.length === 0) {
+      alert("All attendees are already anchored on-chain!");
+      return;
+    }
+
+    if (!window.ethereum) {
+      alert("MetaMask is not installed. Please install MetaMask to anchor on-chain.");
+      return;
+    }
+
+    setAnchoring(true);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+
+      // 1. Build Merkle Tree for un-anchored attendees
+      const treeData = buildMerkleTree(pendingAttendees);
+      if (!treeData) throw new Error("Could not construct Merkle Tree.");
+      const root = treeData.tree.getHexRoot();
+
+      // 2. Call the smart contract batch anchor method
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      const tx = await contract.anchorEventBatch(eventId, root, pendingAttendees.length);
+      
+      const receipt = await tx.wait();
+
+      // 3. Update all pending attendee documents in Firestore
+      const updatePromises = pendingAttendees.map((attendee) => {
+        const attendeeRef = doc(db, "proofs", attendee.id);
+        return updateDoc(attendeeRef, {
+          blockchainTxHash: receipt.hash,
+          merkleRoot: root,
+          anchoredOnChain: true,
+          anchoredAt: new Date().toISOString()
+        });
+      });
+
+      await Promise.all(updatePromises);
+      alert(`Batch anchored ${pendingAttendees.length} records successfully! Tx: ${receipt.hash.slice(0, 10)}...`);
+    } catch (err) {
+      console.error("Batch anchoring failed:", err);
+      alert("Anchoring failed: " + (err.reason || err.message));
+    } finally {
+      setAnchoring(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -74,6 +146,8 @@ export default function EventAttendance() {
       </div>
     );
   }
+
+  const pendingCount = attendees.filter(a => !a.blockchainTxHash).length;
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -90,6 +164,23 @@ export default function EventAttendance() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Batch Anchor Button */}
+          <button
+            onClick={handleBatchAnchor}
+            disabled={anchoring || pendingCount === 0}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white px-4 py-2 rounded-lg text-sm font-medium transition shadow-sm"
+          >
+            {anchoring ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" /> Anchoring Batch...
+              </>
+            ) : (
+              <>
+                <Layers className="w-4 h-4" /> Anchor Batch ({pendingCount})
+              </>
+            )}
+          </button>
+
           <button
             onClick={handleExportCSV}
             className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
@@ -112,7 +203,7 @@ export default function EventAttendance() {
         <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
           <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Blockchain Anchored</div>
           <div className="text-3xl font-bold text-green-600">
-            {attendees.filter(a => a.blockchainTxHash).length}
+            {attendees.filter(a => a.blockchainTxHash).length} / {attendees.length}
           </div>
         </div>
       </div>
@@ -166,7 +257,9 @@ export default function EventAttendance() {
                           Tx: {attendee.blockchainTxHash.substring(0, 10)}...
                         </span>
                       ) : (
-                        <span className="text-xs text-gray-400 font-mono">Pending on-chain</span>
+                        <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-200 font-mono">
+                          Pending Anchor
+                        </span>
                       )}
                     </td>
                   </tr>
