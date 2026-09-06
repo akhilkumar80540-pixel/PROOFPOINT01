@@ -1,0 +1,181 @@
+import { useEffect, useState } from 'react';
+import { useParams, Link } from 'react-router-dom';
+import { db } from '../firebase/config';
+import { collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
+import { Users, Download, ShieldCheck, Clock, MapPin, ArrowLeft, Loader2, ExternalLink } from 'lucide-react';
+
+export default function EventAttendance() {
+  const { eventId } = useParams();
+  const [eventData, setEventData] = useState(null);
+  const [attendees, setAttendees] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // 1. Fetch Event Info
+    const fetchEvent = async () => {
+      try {
+        const q = query(collection(db, "events"), where("eventId", "==", eventId));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          setEventData(snap.docs[0].data());
+        }
+      } catch (err) {
+        console.error("Error fetching event:", err);
+      }
+    };
+    fetchEvent();
+
+    // 2. Real-time listener for Attendees (Proofs for this event)
+    const proofsQuery = query(collection(db, "proofs"), where("eventId", "==", eventId));
+    const unsubscribe = onSnapshot(proofsQuery, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort newest first
+      list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      setAttendees(list);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [eventId]);
+
+  // Export attendance data as CSV
+  const handleExportCSV = () => {
+    if (attendees.length === 0) {
+      alert("No attendance records to export.");
+      return;
+    }
+
+    const headers = ["Roll Number", "Student Name", "Timestamp", "Distance (Meters)", "Proof ID", "Blockchain TxHash"];
+    const rows = attendees.map(a => [
+      `"${a.rollNumber || ''}"`,
+      `"${a.studentName || ''}"`,
+      `"${new Date(a.timestamp).toLocaleString()}"`,
+      a.distanceMeters || 0,
+      `"${a.proofId || ''}"`,
+      `"${a.blockchainTxHash || 'Pending'}"`
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `attendance_${eventId}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <Loader2 className="w-10 h-10 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <Link to="/dashboard" className="text-xs text-primary hover:underline flex items-center gap-1 mb-2">
+            <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
+          </Link>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {eventData ? eventData.name : 'Event Attendance'}
+          </h1>
+          <p className="text-xs text-gray-500 font-mono">Event ID: {eventId}</p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleExportCSV}
+            className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
+          >
+            <Download className="w-4 h-4" /> Export CSV (Excel)
+          </button>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+          <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Total Verified Students</div>
+          <div className="text-3xl font-bold text-gray-900">{attendees.length}</div>
+        </div>
+        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+          <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Allowed Radius</div>
+          <div className="text-3xl font-bold text-indigo-600">{eventData?.radiusMeters || 200}m</div>
+        </div>
+        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+          <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Blockchain Anchored</div>
+          <div className="text-3xl font-bold text-green-600">
+            {attendees.filter(a => a.blockchainTxHash).length}
+          </div>
+        </div>
+      </div>
+
+      {/* Attendees Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+          <h2 className="text-md font-semibold text-gray-900 flex items-center gap-2">
+            <Users className="w-4 h-4 text-primary" /> Live Verified Roster
+          </h2>
+          <span className="text-xs text-gray-400">Updates live automatically</span>
+        </div>
+
+        {attendees.length === 0 ? (
+          <div className="p-12 text-center text-gray-500">
+            No students have checked in yet. Share the event link or QR code to begin!
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase">
+                <tr>
+                  <th className="px-6 py-3">Roll No</th>
+                  <th className="px-6 py-3">Student Name</th>
+                  <th className="px-6 py-3">Distance Verified</th>
+                  <th className="px-6 py-3">Time Checked-in</th>
+                  <th className="px-6 py-3">Proof / Blockchain</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {attendees.map((attendee) => (
+                  <tr key={attendee.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 font-mono font-bold text-gray-900">
+                      {attendee.rollNumber || 'N/A'}
+                    </td>
+                    <td className="px-6 py-4 font-medium text-gray-800">
+                      {attendee.studentName || 'Anonymous Student'}
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                        {attendee.distanceMeters}m away
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-xs text-gray-500">
+                      {new Date(attendee.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="px-6 py-4">
+                      {attendee.blockchainTxHash ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-mono text-green-700 bg-green-50 px-2 py-1 rounded border border-green-200" title={attendee.blockchainTxHash}>
+                          <ShieldCheck className="w-3.5 h-3.5 text-green-600" />
+                          Tx: {attendee.blockchainTxHash.substring(0, 10)}...
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400 font-mono">Pending on-chain</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

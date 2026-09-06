@@ -13,6 +13,7 @@ import LocationVerification from './pages/LocationVerification';
 
 import ProofResult from './pages/ProofResult'; 
 // NEW IMPORT
+import EventAttendance from './pages/EventAttendance';
 
 function AppLayout() {
   const location = useLocation();
@@ -31,6 +32,7 @@ function AppLayout() {
           {/* NEW ROUTE ADDED HERE */}
           <Route path="/verify-location/:eventId" element={<LocationVerification />} />
           <Route path="/verify" element={<VerifyProof />} />
+          <Route path="/event-attendance/:eventId" element={<EventAttendance />} />
         </Routes>
       </main>
     </div>

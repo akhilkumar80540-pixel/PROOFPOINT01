@@ -4,7 +4,7 @@ import { db } from '../firebase/config';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import { calculateDistance } from '../utils/locationUtils';
 import { generateSHA256 } from '../utils/hashUtils';
-import { MapPin, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, User, Hash } from 'lucide-react';
 
 export default function LocationVerification() {
   const { eventId } = useParams();
@@ -13,9 +13,12 @@ export default function LocationVerification() {
   const [status, setStatus] = useState('loading'); 
   const [message, setMessage] = useState('Fetching event details...');
   const [verificationData, setVerificationData] = useState(null);
-  
-  // Yaha humne naya state add kiya loading dikhane ke liye
-  const [isGenerating, setIsGenerating] = useState(false); 
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  // New states for Student details
+  const [studentName, setStudentName] = useState('');
+  const [rollNumber, setRollNumber] = useState('');
+  const [formError, setFormError] = useState('');
 
   useEffect(() => {
     verifyLocationAndEvent();
@@ -68,7 +71,7 @@ export default function LocationVerification() {
         },
         (error) => {
           setStatus('error');
-          setMessage('Location permission denied. We cannot verify your attendance without GPS access.');
+          setMessage('Location permission denied. Please allow GPS location in browser settings.');
         },
         { enableHighAccuracy: true }
       );
@@ -80,15 +83,22 @@ export default function LocationVerification() {
     }
   };
 
-  // Yaha humne naya function add kiya hai jo Button click par chalega
-  const handleGenerateProof = async () => {
+  const handleGenerateProof = async (e) => {
+    e.preventDefault();
+    setFormError('');
+
+    if (!studentName.trim() || !rollNumber.trim()) {
+      setFormError('Please provide both your Full Name and Roll Number.');
+      return;
+    }
+
     setIsGenerating(true);
     try {
       const proofId = 'LP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
       const timestamp = new Date().toISOString();
       
-      // 1. Create canonical data string for hashing
-      const dataToHash = `demo-student|${verificationData.event.eventId}|${verificationData.userLat}|${verificationData.userLng}|${timestamp}|${verificationData.distance}`;
+      // 1. Data string with real Student Name and Roll No for hashing
+      const dataToHash = `${studentName.trim()}|${rollNumber.trim()}|${verificationData.event.eventId}|${verificationData.userLat}|${verificationData.userLng}|${timestamp}|${verificationData.distance}`;
       
       // 2. Generate SHA-256 Hash
       const proofHash = await generateSHA256(dataToHash);
@@ -96,7 +106,8 @@ export default function LocationVerification() {
       // 3. Create Proof Object
       const proofObject = {
         proofId,
-        userId: 'demo-student', // Hardcoded for MVP
+        studentName: studentName.trim(),
+        rollNumber: rollNumber.trim().toUpperCase(),
         eventId: verificationData.event.eventId,
         eventName: verificationData.event.name,
         latitude: verificationData.userLat,
@@ -118,7 +129,7 @@ export default function LocationVerification() {
       
     } catch (error) {
       console.error("Error generating proof:", error);
-      alert("Failed to generate proof");
+      alert("Failed to generate proof. Please check network connection.");
       setIsGenerating(false);
     }
   };
@@ -157,7 +168,7 @@ export default function LocationVerification() {
               {message}
             </h2>
 
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 w-full space-y-4">
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 w-full space-y-4 mb-6">
               <div className="flex justify-between border-b pb-2">
                 <span className="text-gray-500">Event:</span>
                 <span className="font-semibold text-gray-900">{verificationData.event.name}</span>
@@ -180,21 +191,72 @@ export default function LocationVerification() {
               </div>
             </div>
 
-            {/* Yaha button update ho gaya hai */}
+            {/* Student Info Input & Submit */}
             {status === 'success' && (
-              <button 
-                onClick={handleGenerateProof}
-                disabled={isGenerating}
-                className="mt-8 flex justify-center items-center w-full py-3 bg-primary text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-indigo-400 transition-colors"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="h-5 w-5 animate-spin mr-2" /> Generating Proof...
-                  </>
-                ) : (
-                  'Generate cryptographic Proof'
-                )}
-              </button>
+              <form onSubmit={handleGenerateProof} className="w-full space-y-4">
+                <div className="border-t border-gray-200 pt-6">
+                  <h3 className="text-lg font-bold text-gray-900 mb-1">Enter Your Attendance Details</h3>
+                  <p className="text-xs text-gray-500 mb-4">Your name and roll number will be cryptographically signed into the attendance proof.</p>
+                  
+                  {formError && (
+                    <div className="text-xs text-red-600 bg-red-50 p-2.5 rounded border border-red-200 mb-3">
+                      {formError}
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">Full Name</label>
+                      <div className="relative">
+                        <User className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+                        <input
+                          type="text"
+                          required
+                          value={studentName}
+                          onChange={(e) => setStudentName(e.target.value)}
+                          placeholder="e.g. Rahul Sharma"
+                          className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">Roll Number / Student ID</label>
+                      <div className="relative">
+                        <Hash className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+                        <input
+                          type="text"
+                          required
+                          value={rollNumber}
+                          onChange={(e) => setRollNumber(e.target.value)}
+                          placeholder="e.g. 23CS015"
+                          className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm uppercase focus:ring-2 focus:ring-primary focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button 
+                  type="submit"
+                  disabled={isGenerating}
+                  className="mt-6 flex justify-center items-center w-full py-3 bg-primary text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-indigo-400 transition-colors"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin mr-2" /> Generating Cryptographic Proof...
+                    </>
+                  ) : (
+                    'Generate & Submit Attendance Proof'
+                  )}
+                </button>
+              </form>
+            )}
+
+            {status === 'failed' && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-center w-full">
+                <p className="text-sm text-red-700 font-medium">You cannot submit attendance because you are outside the event radius or time slot.</p>
+              </div>
             )}
           </div>
         )}

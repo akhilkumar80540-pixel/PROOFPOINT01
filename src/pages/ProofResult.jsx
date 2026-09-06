@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { db } from '../firebase/config';
-import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore'; // updateDoc added
-import { ShieldCheck, Copy, Loader2, ArrowLeft, Link as LinkIcon, ExternalLink } from 'lucide-react';
+import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { ShieldCheck, Copy, Loader2, ArrowLeft, Link as LinkIcon, ExternalLink, User, Hash } from 'lucide-react';
 import { anchorProofToBlockchain } from '../utils/blockchainUtils';
 
 export default function ProofResult() {
   const { proofId } = useParams();
   const [proof, setProof] = useState(null);
-  const [proofDocId, setProofDocId] = useState(null); // Firebase document ID store karne ke liye
+  const [proofDocId, setProofDocId] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // Blockchain anchoring states
   const [isAnchoring, setIsAnchoring] = useState(false);
   const [txHash, setTxHash] = useState(null);
 
@@ -23,8 +22,8 @@ export default function ProofResult() {
         
         if (!snapshot.empty) {
           setProof(snapshot.docs[0].data());
-          setProofDocId(snapshot.docs[0].id); // Document ID save kar rahe hain update karne ke liye
-          setTxHash(snapshot.docs[0].blockchainTxHash); // Agar pehle se anchor ho chuka hai
+          setProofDocId(snapshot.docs[0].id);
+          setTxHash(snapshot.docs[0].blockchainTxHash);
         }
       } catch (error) {
         console.error("Error fetching proof:", error);
@@ -39,10 +38,8 @@ export default function ProofResult() {
   const handleAnchor = async () => {
     setIsAnchoring(true);
     try {
-      // 1. Send hash to local blockchain
       const transactionHash = await anchorProofToBlockchain(proof.proofHash);
       
-      // 2. Update Firebase with the blockchain TxHash
       const proofRef = doc(db, "proofs", proofDocId);
       await updateDoc(proofRef, {
         blockchainTxHash: transactionHash
@@ -67,8 +64,8 @@ export default function ProofResult() {
         
         <div className="flex flex-col items-center mb-8 border-b pb-8">
           <ShieldCheck className="h-20 w-20 text-primary mb-4" />
-          <h2 className="text-3xl font-bold text-gray-900">Location Proof Generated</h2>
-          <p className="text-gray-500 mt-2 text-center">Your verifiable location proof has been cryptographically signed.</p>
+          <h2 className="text-3xl font-bold text-gray-900">Attendance Proof Generated</h2>
+          <p className="text-gray-500 mt-2 text-center">Your attendance has been cryptographically signed with your identity and location.</p>
         </div>
 
         <div className="space-y-6">
@@ -80,13 +77,31 @@ export default function ProofResult() {
             </div>
           </div>
 
+          {/* Student Identity Section */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 flex items-center gap-3">
+              <User className="h-8 w-8 text-primary" />
+              <div>
+                <label className="block text-xs font-medium text-gray-500">Student Name</label>
+                <div className="font-bold text-gray-900">{proof.studentName || 'N/A'}</div>
+              </div>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 flex items-center gap-3">
+              <Hash className="h-8 w-8 text-primary" />
+              <div>
+                <label className="block text-xs font-medium text-gray-500">Roll Number</label>
+                <div className="font-bold text-gray-900">{proof.rollNumber || 'N/A'}</div>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
               <label className="block text-xs font-medium text-gray-500 mb-1">Event</label>
               <div className="font-semibold text-gray-900">{proof.eventName}</div>
             </div>
             <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-              <label className="block text-xs font-medium text-gray-500 mb-1">Distance Confirmed</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Distance Verified</label>
               <div className="font-semibold text-green-600">{proof.distanceMeters} meters</div>
             </div>
           </div>
@@ -116,7 +131,7 @@ export default function ProofResult() {
             ) : (
               <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <p className="text-sm text-indigo-800">
-                  Anchor this proof to the blockchain to make it immutable and publicly verifiable.
+                  Anchor this attendance record to Ethereum blockchain for permanent tamper-proof storage.
                 </p>
                 <button 
                   onClick={handleAnchor}
