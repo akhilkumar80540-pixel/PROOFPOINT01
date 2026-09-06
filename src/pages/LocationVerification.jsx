@@ -5,11 +5,15 @@ import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'fire
 import { calculateDistance } from '../utils/locationUtils';
 import { generateSHA256 } from '../utils/hashUtils';
 import { Loader2, CheckCircle, XCircle, User, Hash } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { validateRollingToken } from '../utils/tokenUtils';
 
 export default function LocationVerification() {
   const { eventId } = useParams();
   const navigate = useNavigate();
-  
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get('token');
+  const windowParam = searchParams.get('window');
   const [status, setStatus] = useState('loading'); 
   const [message, setMessage] = useState('Fetching event details...');
   const [verificationData, setVerificationData] = useState(null);
@@ -36,6 +40,14 @@ export default function LocationVerification() {
       }
       
       const event = querySnapshot.docs[0].data();
+      if (token && windowParam) {
+        const isTokenValid = await validateRollingToken(eventId, token, windowParam);
+        if (!isTokenValid) {
+          setStatus('error');
+          setMessage('This QR code link has expired. Please scan the current live QR code from the screen.');
+          return;
+        }
+      }
       setMessage('Requesting your GPS location...');
 
       if (!navigator.geolocation) {
@@ -83,31 +95,48 @@ export default function LocationVerification() {
     }
   };
 
-  const handleGenerateProof = async (e) => {
+ const handleGenerateProof = async (e) => {
     e.preventDefault();
     setFormError('');
 
-    if (!studentName.trim() || !rollNumber.trim()) {
+    const trimmedRoll = rollNumber.trim().toUpperCase();
+    const trimmedName = studentName.trim();
+
+    if (!trimmedName || !trimmedRoll) {
       setFormError('Please provide both your Full Name and Roll Number.');
       return;
     }
 
     setIsGenerating(true);
     try {
+      // 1. One-Submission Enforcement Check
+      const duplicateQuery = query(
+        collection(db, 'proofs'),
+        where('eventId', '==', verificationData.event.eventId),
+        where('rollNumber', '==', trimmedRoll)
+      );
+      const duplicateSnap = await getDocs(duplicateQuery);
+
+      if (!duplicateSnap.empty) {
+        setFormError(`Attendance already recorded for Roll Number: ${trimmedRoll}. Multiple submissions are not allowed.`);
+        setIsGenerating(false);
+        return;
+      }
+
       const proofId = 'LP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
       const timestamp = new Date().toISOString();
       
-      // 1. Data string with real Student Name and Roll No for hashing
-      const dataToHash = `${studentName.trim()}|${rollNumber.trim()}|${verificationData.event.eventId}|${verificationData.userLat}|${verificationData.userLng}|${timestamp}|${verificationData.distance}`;
+      // 2. Data string with Student Name and Roll No for hashing
+      const dataToHash = `${trimmedName}|${trimmedRoll}|${verificationData.event.eventId}|${verificationData.userLat}|${verificationData.userLng}|${timestamp}|${verificationData.distance}`;
       
-      // 2. Generate SHA-256 Hash
+      // 3. Generate SHA-256 Hash
       const proofHash = await generateSHA256(dataToHash);
 
-      // 3. Create Proof Object
+      // 4. Create Proof Object
       const proofObject = {
         proofId,
-        studentName: studentName.trim(),
-        rollNumber: rollNumber.trim().toUpperCase(),
+        studentName: trimmedName,
+        rollNumber: trimmedRoll,
         eventId: verificationData.event.eventId,
         eventName: verificationData.event.name,
         latitude: verificationData.userLat,
@@ -121,15 +150,15 @@ export default function LocationVerification() {
         createdAt: serverTimestamp()
       };
 
-      // 4. Save to Firebase
+      // 5. Save to Firebase
       await addDoc(collection(db, 'proofs'), proofObject);
       
-      // 5. Redirect to result page
+      // 6. Redirect to result page
       navigate(`/proof/${proofId}`);
       
     } catch (error) {
       console.error("Error generating proof:", error);
-      alert("Failed to generate proof. Please check network connection.");
+      setFormError("Failed to generate proof. Please check your network connection.");
       setIsGenerating(false);
     }
   };
