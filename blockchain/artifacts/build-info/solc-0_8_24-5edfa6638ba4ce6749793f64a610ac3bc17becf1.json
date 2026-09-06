@@ -1,0 +1,42 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_24-5edfa6638ba4ce6749793f64a610ac3bc17becf1",
+  "solcVersion": "0.8.24",
+  "solcLongVersion": "0.8.24+commit.e11b9ed9",
+  "compilerType": "solc",
+  "userSourceNameMap": {
+    "blockchain/contracts/ProofPointRegistry.sol": "project/blockchain/contracts/ProofPointRegistry.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "shanghai",
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/blockchain/contracts/ProofPointRegistry.sol": {
+        "content": "// SPDX-License-Identifier: MIT\r\npragma solidity ^0.8.24;\r\n\r\ncontract ProofPointRegistry {\r\n    // Event jo emit hoga jab bhi naya proof blockhcain par save hoga\r\n    event ProofAnchored(bytes32 indexed proofHash, uint256 timestamp, address submitter);\r\n\r\n    // Ye mapping (dictionary) hash ko store karegi\r\n    mapping(bytes32 => uint256) public proofs;\r\n\r\n    // 1. Function: Hash ko blockchain par save karna\r\n    function storeProof(bytes32 _proofHash) public {\r\n        // Check karna ki ye proof pehle se toh nahi hai\r\n        require(proofs[_proofHash] == 0, \"Proof already exists on blockchain!\");\r\n        \r\n        // Block ka current time save karna\r\n        proofs[_proofHash] = block.timestamp;\r\n        \r\n        // Log emit karna\r\n        emit ProofAnchored(_proofHash, block.timestamp, msg.sender);\r\n    }\r\n\r\n    // 2. Function: Check karna ki hash exist karta hai ya nahi (Proof Verification ke liye)\r\n    function verifyProof(bytes32 _proofHash) public view returns (bool exists, uint256 timestamp) {\r\n        uint256 time = proofs[_proofHash];\r\n        if (time > 0) {\r\n            return (true, time);\r\n        }\r\n        return (false, 0);\r\n    }\r\n}"
+      }
+    }
+  }
+}
