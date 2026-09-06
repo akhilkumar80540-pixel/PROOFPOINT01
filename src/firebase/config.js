@@ -1,20 +1,21 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getAnalytics } from "firebase/analytics";
+import { getFirestore } from "firebase/firestore"; // Added this back
+import { getAuth } from "firebase/auth"; // Added this back
 
-// Your web app's Firebase configuration pulled from Vite environment variables
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
+  apiKey: "AIzaSyCwFzVdpV2pfDk5nRB5jpFlamP-R49wl1E",
+  authDomain: "proofpoint-01.firebaseapp.com",
+  projectId: "proofpoint-01",
+  storageBucket: "proofpoint-01.firebasestorage.app",
+  messagingSenderId: "239535267742",
+  appId: "1:239535267742:web:e2f92ab9f2bebf633cc08f",
+  measurementId: "G-CWYQY28VNJ"
 };
-console.log("CHECKING VITE ENV:", import.meta.env.VITE_FIREBASE_API_KEY);
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
 
-// Export Authentication and Firestore instances
-export const auth = getAuth(app);
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
+
+// THESE TWO LINES ARE CRITICAL
 export const db = getFirestore(app);
+export const auth = getAuth(app);

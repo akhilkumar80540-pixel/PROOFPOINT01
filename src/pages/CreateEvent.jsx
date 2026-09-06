@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { db } from '../firebase/config';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { QRCodeSVG } from 'qrcode.react';
@@ -135,6 +135,11 @@ export default function CreateEvent() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleWhatsAppShare = () => {
+    const message = `Check in for the event using this secure rolling link: ${dynamicUrl}`;
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`, '_blank');
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       {!createdEvent ? (
@@ -266,7 +271,6 @@ export default function CreateEvent() {
           </form>
         </div>
       ) : (
-        /* ... QR CODE SCREEN REMAINS THE SAME ... */
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center max-w-xl mx-auto">
           <div className="inline-block p-3 bg-green-50 rounded-full mb-3">
             <Check className="h-8 w-8 text-green-600" />
@@ -294,13 +298,35 @@ export default function CreateEvent() {
             </div>
           </div>
           
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Link
-              to={`/event-attendance/${createdEvent.eventId}`}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
-            >
-              <Users className="w-4 h-4" /> View Live Roster
-            </Link>
+          {/* Share & Action Buttons */}
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                type="button"
+                onClick={handleWhatsAppShare}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 transition shadow-sm"
+              >
+                <Share2 className="w-4 h-4" /> Share via WhatsApp
+              </button>
+              
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-gray-100 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-200 transition border border-gray-300"
+              >
+                {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                {copied ? 'Copied Link!' : 'Copy Link'}
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Link
+                to={`/event-attendance/${createdEvent.eventId}`}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+              >
+                <Users className="w-4 h-4" /> View Live Roster
+              </Link>
+            </div>
           </div>
         </div>
       )}
