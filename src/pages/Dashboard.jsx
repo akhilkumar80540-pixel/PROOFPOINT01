@@ -113,7 +113,15 @@ export default function Dashboard() {
                   <div className="text-xs text-gray-500 space-y-1 mt-3">
                     <div className="flex items-center gap-1.5">
                       <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                      <span>{new Date(event.startTime).toLocaleDateString()}</span>
+                      
+
+                      <span>
+  {event?.startTime?.toDate
+    ? event.startTime.toDate().toLocaleDateString()
+    : event?.startTime
+    ? new Date(event.startTime).toLocaleDateString()
+    : 'Date not set'}
+</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <MapPin className="w-3.5 h-3.5 text-gray-400" />
