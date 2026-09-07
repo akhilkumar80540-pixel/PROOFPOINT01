@@ -19,7 +19,7 @@ import { buildMerkleTree } from '../utils/merkleUtils';
 // ==========================================
 // CONTRACT ADDRESS & ABI CONFIGURATION
 // ==========================================
-const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ADDRESS = "0xa8a382A1F2D9cFB2978F86f496483B91c01cAC50";
 const CONTRACT_ABI = [
   "function anchorEventBatch(string memory eventId, bytes32 merkleRoot, uint256 totalAttendees) external",
   "function verifyProofMembership(string memory eventId, bytes32 leafHash, bytes32[] memory proof) external view returns (bool)"
@@ -104,25 +104,68 @@ export default function EventAttendance() {
 
     setAnchoring(true);
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
+      // 1. Ensure wallet is switched to Sepolia (Chain ID 11155111 / 0xaa36a7)
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0xaa36a7" }],
+        });
+      } catch (switchErr) {
+        if (switchErr.code === 4902) {
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [
+              {
+                chainId: "0xaa36a7",
+                chainName: "Sepolia Test Network",
+                rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              },
+            ],
+          });
+        }
+      }
 
-      // 1. Build Merkle Tree for un-anchored attendees
+      // 2. Request user account directly without BrowserProvider
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const userAddress = accounts[0];
+
+      // 3. Build Merkle Tree for un-anchored attendees
       const treeData = buildMerkleTree(pendingAttendees);
       if (!treeData) throw new Error("Could not construct Merkle Tree.");
       const root = treeData.tree.getHexRoot();
 
-      // 2. Call the smart contract batch anchor method
-      const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
-      const tx = await contract.anchorEventBatch(eventId, root, pendingAttendees.length);
-      
-      const receipt = await tx.wait();
+      // 4. Encode contract function calldata using Ethers Interface
+      const iface = new ethers.Interface(CONTRACT_ABI);
+      const data = iface.encodeFunctionData("anchorEventBatch", [
+        eventId,
+        root,
+        pendingAttendees.length,
+      ]);
 
-      // 3. Update all pending attendee documents in Firestore
+      // 5. Send raw transaction directly to MetaMask (bypasses eth_blockNumber rate-limit checks)
+      const txHash = await window.ethereum.request({
+        method: "eth_sendTransaction",
+        params: [
+          {
+            from: userAddress,
+            to: CONTRACT_ADDRESS,
+            data: data,
+            gas: "0x30D40", // 200,000 gas limit in hex
+          },
+        ],
+      });
+
+      // 6. Wait for block confirmation using an independent public Sepolia node
+      const directProvider = new ethers.JsonRpcProvider("https://ethereum-sepolia-rpc.publicnode.com");
+      const receipt = await directProvider.waitForTransaction(txHash, 1);
+
+      // 7. Update all pending attendee documents in Firestore
       const updatePromises = pendingAttendees.map((attendee) => {
         const attendeeRef = doc(db, "proofs", attendee.id);
         return updateDoc(attendeeRef, {
-          blockchainTxHash: receipt.hash,
+          blockchainTxHash: txHash,
           merkleRoot: root,
           anchoredOnChain: true,
           anchoredAt: new Date().toISOString()
@@ -130,7 +173,7 @@ export default function EventAttendance() {
       });
 
       await Promise.all(updatePromises);
-      alert(`Batch anchored ${pendingAttendees.length} records successfully! Tx: ${receipt.hash.slice(0, 10)}...`);
+      alert(`Batch anchored ${pendingAttendees.length} records successfully! Tx: ${txHash.slice(0, 10)}...`);
     } catch (err) {
       console.error("Batch anchoring failed:", err);
       alert("Anchoring failed: " + (err.reason || err.message));

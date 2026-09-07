@@ -5,7 +5,9 @@ import { collection, query, where, getDocs } from 'firebase/firestore';
 import { generateProof, getLeafHash } from '../utils/merkleUtils';
 import { CheckCircle2, XCircle, Search, Loader2 } from 'lucide-react';
 
-const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "0xa8a382A1F2D9cFB2978F86f496483B91c01cAC50";
+const SEPOLIA_RPC_URL = import.meta.env.VITE_SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
+
 const CONTRACT_ABI = [
   "function verifyProofMembership(string memory eventId, bytes32 leafHash, bytes32[] memory proof) external view returns (bool)"
 ];
@@ -55,8 +57,8 @@ export default function VerifyProof() {
         throw new Error("Unable to reconstruct Merkle tree.");
       }
 
-      // 4. Contract se query karein (bina metamask login ke, direct provider)
-      const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+      // 4. Contract se query karein via live Sepolia RPC (zero MetaMask dependency)
+      const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL);
       const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
 
       const isValid = await contract.verifyProofMembership(
