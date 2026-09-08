@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { 
   QrCode, 
   MapPin, 
@@ -13,11 +14,12 @@ import {
   Archive, 
   RotateCcw,
   Share2,
-  Check
+  Check,
+  Trash2
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db, auth } from '../firebase/config';
-import { collection, getDocs, query, where, doc, updateDoc } from 'firebase/firestore';
+
 import { onAuthStateChanged } from 'firebase/auth';
 
 export default function Dashboard() {
@@ -122,6 +124,26 @@ export default function Dashboard() {
         archived: shouldArchive,
         archivedAt: shouldArchive ? new Date().toISOString() : null
       });
+
+// Permanently Delete Event from Firestore
+  const handlePermanentDelete = async (event) => {
+    const confirmed = window.confirm(
+      `⚠️ PERMANENT DELETE WARNING:\n\nAre you sure you want to permanently delete "${event.name}"?\nThis cannot be undone, but attendee proof logs will remain intact.`
+    );
+    if (!confirmed) return;
+
+    setActionInProgress(event.id);
+    try {
+      await deleteDoc(doc(db, 'events', event.id));
+      setOrganizedEvents((prev) => prev.filter((item) => item.id !== event.id));
+    } catch (err) {
+      console.error("Failed to delete event:", err);
+      alert("Could not delete event. Please check permissions.");
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
 
       // Update local state without full reload
       setOrganizedEvents((prev) =>
@@ -336,6 +358,20 @@ export default function Dashboard() {
         </>
       )}
     </button>
+
+    {/* 👇 YEH ADD KAREIN: Delete Permanently Button (Sirf Archived tab me dikhega) */}
+    {event.archived && (
+      <button
+        type="button"
+        disabled={actionInProgress === event.id}
+        onClick={() => handlePermanentDelete(event)}
+        className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-lg border border-red-200 transition"
+        title="Permanently Delete Event"
+      >
+        <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete
+      </button>
+    )}
+
   </div>
 </div>
 
