@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { db, auth } from '../firebase/config';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { calculateDistance } from '../utils/locationUtils';
 import { generateSHA256 } from '../utils/hashUtils';
-import { Loader2, CheckCircle, XCircle, User, Hash, MapPin, Clock } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, User, Hash, MapPin, Clock, LogIn } from 'lucide-react';
 import { validateRollingToken } from '../utils/tokenUtils';
 
 export default function LocationVerification() {
@@ -15,47 +16,65 @@ export default function LocationVerification() {
   const windowParam = searchParams.get('window');
 
   const [status, setStatus] = useState('loading'); 
-  const [message, setMessage] = useState('Fetching event details...');
+  const [message, setMessage] = useState('Checking authentication & event details...');
   const [verificationData, setVerificationData] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
-  // General Attendee States (Supports Roll No, Ticket ID, Badge ID)
-  const [attendeeName, setAttendeeName] = useState(auth.currentUser?.displayName || '');
+  // Attendee Inputs
+  const [attendeeName, setAttendeeName] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [formError, setFormError] = useState('');
 
+  // 1. Safe Auth State Verification
   useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthChecked(true);
+      if (user && user.displayName) {
+        setAttendeeName(user.displayName);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Trigger verification only after auth check finishes
+  useEffect(() => {
+    if (!authChecked) return;
     verifyLocationAndEvent();
-  }, [eventId]);
+  }, [authChecked, eventId]);
 
   const verifyLocationAndEvent = async () => {
     try {
+      setMessage('Fetching event parameters...');
       const q = query(collection(db, "events"), where("eventId", "==", eventId));
       const querySnapshot = await getDocs(q);
       
       if (querySnapshot.empty) {
         setStatus('error');
-        setMessage('Event not found or invalid QR code.');
+        setMessage('Event not found or invalid event ID.');
         return;
       }
       
       const event = querySnapshot.docs[0].data();
 
-      // Validate Rolling Token Anti-Spoofing
+      // Rolling token check (only if present in URL from live QR)
       if (token && windowParam) {
         const isTokenValid = await validateRollingToken(eventId, token, windowParam);
         if (!isTokenValid) {
           setStatus('error');
-          setMessage('This QR code link has expired. Please scan the current live QR code from the screen.');
+          setMessage('This QR code link has expired. Please scan the current live QR code from the organizer screen.');
           return;
         }
       }
 
-      setMessage('Requesting your GPS location...');
+      setMessage('Acquiring high-accuracy GPS coordinates...');
 
       if (!navigator.geolocation) {
         setStatus('error');
-        setMessage('Geolocation is not supported by your browser.');
+        setMessage('Geolocation is not supported by your mobile browser.');
         return;
       }
 
@@ -83,17 +102,24 @@ export default function LocationVerification() {
 
           if (isLocationValid && isTimeValid) {
             setStatus('success');
-            setMessage('Location & Time Verified Successfully!');
+            setMessage('Location & Schedule Verified Successfully!');
           } else {
             setStatus('failed');
-            setMessage('Verification Check Failed');
+            setMessage('Verification Parameter Check Failed');
           }
         },
         (error) => {
+          console.warn("Geolocation prompt error:", error);
           setStatus('error');
-          setMessage('Location permission denied. Please enable GPS permissions in your browser settings.');
+          if (error.code === 1) {
+            setMessage('Location permission was denied. Please allow GPS location in your mobile browser settings and reload.');
+          } else if (error.code === 2) {
+            setMessage('GPS position unavailable. Please ensure your device Location/GPS is turned ON.');
+          } else {
+            setMessage('Location request timed out. Please refresh and try again.');
+          }
         },
-        { enableHighAccuracy: true }
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
       
     } catch (error) {
@@ -111,15 +137,15 @@ export default function LocationVerification() {
     const trimmedName = attendeeName.trim();
 
     if (!trimmedName || !trimmedId) {
-      setFormError('Please provide both your Name and an Identifier (e.g. Ticket ID, Roll No, Badge ID).');
+      setFormError('Please provide both your Name and an Identifier (Ticket, Roll No, or ID).');
       return;
     }
 
     setIsGenerating(true);
     try {
-      const currentUserId = auth.currentUser ? auth.currentUser.uid : null;
+      const activeUid = auth.currentUser ? auth.currentUser.uid : null;
 
-      // 1. One-Submission Enforcement Check (by Identifier within this event)
+      // Duplicate attendance prevention
       const duplicateQuery = query(
         collection(db, 'proofs'),
         where('eventId', '==', verificationData.event.eventId),
@@ -128,7 +154,7 @@ export default function LocationVerification() {
       const duplicateSnap = await getDocs(duplicateQuery);
 
       if (!duplicateSnap.empty) {
-        setFormError(`Attendance has already been recorded for Identifier: ${trimmedId}. Multiple submissions are not permitted.`);
+        setFormError(`Attendance has already been recorded for Identifier: ${trimmedId}. Duplicate submissions are not allowed.`);
         setIsGenerating(false);
         return;
       }
@@ -136,27 +162,25 @@ export default function LocationVerification() {
       const proofId = 'PP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
       const timestamp = new Date().toISOString();
       
-      // 2. Cryptographic Data String for SHA-256
       const dataToHash = `${trimmedName}|${trimmedId}|${verificationData.event.eventId}|${verificationData.userLat}|${verificationData.userLng}|${timestamp}|${verificationData.distance}`;
       const proofHash = await generateSHA256(dataToHash);
 
-      // 3. Create Proof Object with Dual Field Support
       const proofObject = {
         proofId,
         eventId: verificationData.event.eventId,
         eventName: verificationData.event.name,
         organizerId: verificationData.event.organizerId || null,
         
-        // Attendee Identity
-        attendeeId: currentUserId,
+        // Attendee Identity (Key for Attendance History)
+        attendeeId: activeUid,
         attendeeName: trimmedName,
         identifier: trimmedId,
 
-        // Legacy compatibility fields
+        // Legacy compatibility
         studentName: trimmedName,
         rollNumber: trimmedId,
 
-        // Geolocation & Time Data
+        // Geolocation Data
         latitude: verificationData.userLat,
         longitude: verificationData.userLng,
         timestamp,
@@ -164,16 +188,12 @@ export default function LocationVerification() {
         locationVerified: verificationData.isLocationValid,
         timeVerified: verificationData.isTimeValid,
         
-        // Verification Proof & Blockchain Anchoring Status
         proofHash,
         blockchainTxHash: null,
         createdAt: serverTimestamp()
       };
 
-      // 4. Save to Firestore
       await addDoc(collection(db, 'proofs'), proofObject);
-      
-      // 5. Navigate to Proof Receipt Page
       navigate(`/proof/${proofId}`);
       
     } catch (error) {
@@ -183,25 +203,56 @@ export default function LocationVerification() {
     }
   };
 
+  // Safe Loading Screen
+  if (!authChecked) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh]">
+        <Loader2 className="h-10 w-10 text-primary animate-spin mb-3" />
+        <p className="text-sm text-gray-500 font-medium">Initializing session...</p>
+      </div>
+    );
+  }
+
+  // If user is not logged in on mobile
+  if (!currentUser) {
+    return (
+      <div className="max-w-md mx-auto my-12 p-8 bg-white border border-gray-200 rounded-2xl shadow-sm text-center">
+        <div className="inline-flex p-3 bg-indigo-50 text-primary rounded-full mb-4">
+          <LogIn className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-gray-900 mb-2">Login Required</h2>
+        <p className="text-sm text-gray-600 mb-6">
+          You must be logged in to verify attendance so the proof can be securely linked to your dashboard.
+        </p>
+        <Link
+          to={`/login?redirect=/verify-location/${eventId}${token ? `?token=${token}&window=${windowParam}` : ''}`}
+          className="inline-flex items-center justify-center px-6 py-2.5 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+        >
+          Login to Continue
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-2xl mx-auto px-4 py-10">
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sm:p-8 text-center">
+    <div className="max-w-2xl mx-auto px-4 py-8">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 sm:p-8 text-center">
         
         {(status === 'loading' || status === 'checking') && (
           <div className="flex flex-col items-center py-8">
             <Loader2 className="h-12 w-12 text-primary animate-spin mb-4" />
-            <h2 className="text-xl font-bold text-gray-900">{message}</h2>
+            <h2 className="text-lg font-bold text-gray-900">{message}</h2>
           </div>
         )}
 
         {status === 'error' && (
           <div className="flex flex-col items-center py-6">
-            <XCircle className="h-16 w-16 text-red-500 mb-4" />
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Verification Error</h2>
-            <p className="text-gray-600 mb-6 text-sm">{message}</p>
+            <XCircle className="h-14 w-14 text-red-500 mb-4" />
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Verification Notice</h2>
+            <p className="text-gray-600 mb-6 text-sm max-w-md">{message}</p>
             <button 
               onClick={() => navigate('/scan-qr')} 
-              className="bg-gray-900 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition"
+              className="bg-gray-900 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition"
             >
               Scan Again
             </button>
@@ -210,30 +261,30 @@ export default function LocationVerification() {
 
         {(status === 'success' || status === 'failed') && verificationData && (
           <div className="flex flex-col items-center text-left w-full">
-            <div className="flex items-center justify-center w-full mb-4">
+            <div className="flex items-center justify-center w-full mb-3">
               {status === 'success' ? (
                 <div className="p-3 bg-green-50 rounded-full">
-                  <CheckCircle className="h-12 w-12 text-green-600" />
+                  <CheckCircle className="h-10 w-10 text-green-600" />
                 </div>
               ) : (
                 <div className="p-3 bg-red-50 rounded-full">
-                  <XCircle className="h-12 w-12 text-red-600" />
+                  <XCircle className="h-10 w-10 text-red-600" />
                 </div>
               )}
             </div>
             
-            <h2 className={`text-xl font-bold text-center w-full mb-6 ${status === 'success' ? 'text-green-700' : 'text-red-600'}`}>
+            <h2 className={`text-lg font-bold text-center w-full mb-5 ${status === 'success' ? 'text-green-700' : 'text-red-600'}`}>
               {message}
             </h2>
 
-            {/* Geofence & Parameter Verification Breakdown */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 w-full space-y-3 mb-6 text-sm">
-              <div className="flex justify-between items-center border-b border-gray-200 pb-2.5">
+            {/* Verification Parameter Breakdown */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 w-full space-y-2.5 mb-6 text-sm">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
                 <span className="text-gray-500">Event Name</span>
                 <span className="font-semibold text-gray-900">{verificationData.event.name}</span>
               </div>
               
-              <div className="flex justify-between items-center border-b border-gray-200 pb-2.5">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
                 <span className="text-gray-500 flex items-center gap-1.5">
                   <MapPin className="w-4 h-4 text-gray-400" /> Geofence Distance
                 </span>
@@ -252,13 +303,13 @@ export default function LocationVerification() {
               </div>
             </div>
 
-            {/* Attendee Data Capture Form */}
+            {/* Attendance Submission Form */}
             {status === 'success' && (
               <form onSubmit={handleGenerateProof} className="w-full space-y-4">
                 <div className="border-t border-gray-200 pt-5">
                   <h3 className="text-base font-bold text-gray-900 mb-1">Confirm Attendee Details</h3>
                   <p className="text-xs text-gray-500 mb-4">
-                    Your details will be cryptographically bound into an immutable attendance record.
+                    Your attendance record will be tied directly to your account.
                   </p>
                   
                   {formError && (
@@ -285,7 +336,7 @@ export default function LocationVerification() {
 
                     <div>
                       <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">
-                        Attendee Identifier (Ticket, Roll #, or Badge ID)
+                        Attendee Identifier (Ticket, Roll #, or ID)
                       </label>
                       <div className="relative">
                         <Hash className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
@@ -294,7 +345,7 @@ export default function LocationVerification() {
                           required
                           value={identifier}
                           onChange={(e) => setIdentifier(e.target.value)}
-                          placeholder="e.g. TKT-9021, ROLL-102, or EMP-44"
+                          placeholder="e.g. TKT-9021 or 23CS015"
                           className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm uppercase focus:ring-2 focus:ring-primary focus:outline-none"
                         />
                       </div>

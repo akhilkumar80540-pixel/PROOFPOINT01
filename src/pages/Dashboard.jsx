@@ -42,7 +42,7 @@ export default function Dashboard() {
 
         // 2. Fetch Events attended by this user
         const attQuery = query(
-          collection(db, 'attendance'),
+          collection(db, 'proofs'),
           where('attendeeId', '==', user.uid)
         );
         const attSnapshot = await getDocs(attQuery);
