@@ -83,7 +83,7 @@ export default function LocationVerification() {
   }, [authChecked, eventId, token, windowParam]);
 
   // 3. User-Initiated Geolocation Verification (Avoids mobile silent blocks)
-  const handleRequestLocation = () => {
+ const handleRequestLocation = () => {
     if (!navigator.geolocation) {
       setStatus('error');
       setMessage('Geolocation is not supported by your browser.');
@@ -101,10 +101,23 @@ export default function LocationVerification() {
         const distance = calculateDistance(userLat, userLng, eventData.latitude, eventData.longitude);
         const isLocationValid = distance <= eventData.radiusMeters;
         
-        const now = new Date();
-        const eventStart = new Date(eventData.startTime);
-        const eventEnd = new Date(eventData.endTime);
-        const isTimeValid = now >= eventStart && now <= eventEnd;
+        // 15-minute buffer allowance (Early entry & late check-in)
+        const BUFFER_MS = 15 * 60 * 1000;
+        const now = Date.now();
+        const startTimeMs = new Date(eventData.startTime).getTime();
+        const endTimeMs = new Date(eventData.endTime).getTime();
+
+        const startWithGrace = startTimeMs - BUFFER_MS;
+        const endWithGrace = endTimeMs + BUFFER_MS;
+        const isTimeValid = now >= startWithGrace && now <= endWithGrace;
+
+        // User-friendly descriptive status message
+        let timeStatusText = 'Active Slot ✓';
+        if (now < startWithGrace) {
+          timeStatusText = `Starts at ${new Date(eventData.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        } else if (now > endWithGrace) {
+          timeStatusText = `Ended at ${new Date(eventData.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        }
 
         setVerificationData({
           event: eventData,
@@ -112,7 +125,8 @@ export default function LocationVerification() {
           userLat,
           userLng,
           isLocationValid,
-          isTimeValid
+          isTimeValid,
+          timeStatusText
         });
 
         if (isLocationValid && isTimeValid) {
@@ -338,12 +352,12 @@ export default function LocationVerification() {
                   {verificationData.distance}m away (Max: {verificationData.event.radiusMeters}m)
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Time Window</span>
-                <span className={`font-bold ${verificationData.isTimeValid ? 'text-green-600' : 'text-red-600'}`}>
-                  {verificationData.isTimeValid ? 'Valid Slot ✓' : 'Expired / Not Started ✕'}
-                </span>
-              </div>
+             <div className="flex justify-between">
+    <span className="text-gray-500">Time Window</span>
+    <span className={`font-bold ${verificationData.isTimeValid ? 'text-green-600' : 'text-red-600'}`}>
+      {verificationData.timeStatusText || (verificationData.isTimeValid ? 'Valid Slot ✓' : 'Out of Window ✕')}
+    </span>
+  </div>
             </div>
 
             {status === 'success' && (

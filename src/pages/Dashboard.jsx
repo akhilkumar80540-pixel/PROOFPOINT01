@@ -11,7 +11,9 @@ import {
   Award, 
   Clock, 
   Archive, 
-  RotateCcw 
+  RotateCcw,
+  Share2,
+  Check
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db, auth } from '../firebase/config';
@@ -25,6 +27,34 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('active'); // 'active' | 'archived'
   const [actionInProgress, setActionInProgress] = useState(null);
+  const [copiedEventId, setCopiedEventId] = useState(null);
+
+  const handleShareEvent = async (event) => {
+    const shareUrl = `${window.location.origin}/scan-qr`;
+    const shareText = `📍 Check into "${event.name}" on ProofPoint!\nEvent ID: ${event.eventId}\nMark Attendance: ${shareUrl}`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `ProofPoint: ${event.name}`,
+          text: shareText,
+          url: shareUrl,
+        });
+        return;
+      } catch (err) {
+        // User cancelled or share failed, fallback to clipboard
+      }
+    }
+
+    // Fallback: Copy text directly to clipboard
+    try {
+      await navigator.clipboard.writeText(shareText);
+      setCopiedEventId(event.id);
+      setTimeout(() => setCopiedEventId(null), 2500);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -253,39 +283,63 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
+{/* ✅ REPLACED WITH THIS */}
+<div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between gap-2">
+  <div className="flex items-center gap-3">
+    <Link
+      to={`/event-attendance/${event.eventId}`}
+      className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:text-indigo-800 transition-colors"
+    >
+      <Users className="w-3.5 h-3.5" /> Manage Roster
+      <ArrowRight className="w-3 h-3" />
+    </Link>
+  </div>
 
-                <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    <Link
-                      to={`/event-attendance/${event.eventId}`}
-                      className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:text-indigo-800 transition-colors"
-                    >
-                      <Users className="w-3.5 h-3.5" /> Manage Roster
-                      <ArrowRight className="w-3 h-3" />
-                    </Link>
-                  </div>
+  <div className="flex items-center gap-1.5">
+    {/* Share / Copy Event ID Button */}
+    <button
+      type="button"
+      onClick={() => handleShareEvent(event)}
+      className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+      title="Share Event ID & Link"
+    >
+      {copiedEventId === event.id ? (
+        <>
+          <Check className="w-3.5 h-3.5 text-green-600" />
+          <span className="text-green-600 font-medium">Copied!</span>
+        </>
+      ) : (
+        <>
+          <Share2 className="w-3.5 h-3.5 text-gray-500" />
+          <span>Share</span>
+        </>
+      )}
+    </button>
 
-                  {/* Archive / Restore Button */}
-                  <button
-                    type="button"
-                    disabled={actionInProgress === event.id}
-                    onClick={() => handleToggleArchive(event, !event.archived)}
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
-                    title={event.archived ? "Restore event to active" : "Archive event from active list"}
-                  >
-                    {actionInProgress === event.id ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
-                    ) : event.archived ? (
-                      <>
-                        <RotateCcw className="w-3.5 h-3.5 text-green-600" /> Restore
-                      </>
-                    ) : (
-                      <>
-                        <Archive className="w-3.5 h-3.5 text-gray-400" /> Archive
-                      </>
-                    )}
-                  </button>
-                </div>
+    {/* Archive / Restore Button */}
+    <button
+      type="button"
+      disabled={actionInProgress === event.id}
+      onClick={() => handleToggleArchive(event, !event.archived)}
+      className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+      title={event.archived ? "Restore event to active" : "Archive event from active list"}
+    >
+      {actionInProgress === event.id ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
+      ) : event.archived ? (
+        <>
+          <RotateCcw className="w-3.5 h-3.5 text-green-600" /> Restore
+        </>
+      ) : (
+        <>
+          <Archive className="w-3.5 h-3.5 text-gray-400" /> Archive
+        </>
+      )}
+    </button>
+  </div>
+</div>
+
+
               </div>
             ))}
           </div>
