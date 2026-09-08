@@ -110,8 +110,7 @@ export default function Dashboard() {
 
     return () => unsubscribe();
   }, []);
-
-  // Handle Archiving / Restoring Events
+// Handle Archiving / Restoring Events
   const handleToggleArchive = async (event, shouldArchive) => {
     const actionLabel = shouldArchive ? 'archive' : 'restore';
     const confirmed = window.confirm(`Are you sure you want to ${actionLabel} "${event.name}"?`);
@@ -125,26 +124,6 @@ export default function Dashboard() {
         archivedAt: shouldArchive ? new Date().toISOString() : null
       });
 
-// Permanently Delete Event from Firestore
-  const handlePermanentDelete = async (event) => {
-    const confirmed = window.confirm(
-      `⚠️ PERMANENT DELETE WARNING:\n\nAre you sure you want to permanently delete "${event.name}"?\nThis cannot be undone, but attendee proof logs will remain intact.`
-    );
-    if (!confirmed) return;
-
-    setActionInProgress(event.id);
-    try {
-      await deleteDoc(doc(db, 'events', event.id));
-      setOrganizedEvents((prev) => prev.filter((item) => item.id !== event.id));
-    } catch (err) {
-      console.error("Failed to delete event:", err);
-      alert("Could not delete event. Please check permissions.");
-    } finally {
-      setActionInProgress(null);
-    }
-  };
-
-
       // Update local state without full reload
       setOrganizedEvents((prev) =>
         prev.map((item) =>
@@ -154,6 +133,31 @@ export default function Dashboard() {
     } catch (err) {
       console.error(`Failed to ${actionLabel} event:`, err);
       alert(`Could not ${actionLabel} event. Please try again.`);
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  // Permanently Delete Event from Firestore
+  const handlePermanentDelete = async (event) => {
+    const confirmed = window.confirm(
+      `⚠️ PERMANENT DELETE WARNING:\n\nAre you sure you want to permanently delete "${event.name}"?\nThis cannot be undone, but attendee proof logs will remain intact.`
+    );
+    if (!confirmed) return;
+
+    const targetDocId = event.id || event.eventId;
+    if (!targetDocId) {
+      alert("Error: Event document ID is missing.");
+      return;
+    }
+
+    setActionInProgress(event.id);
+    try {
+      await deleteDoc(doc(db, 'events', targetDocId));
+      setOrganizedEvents((prev) => prev.filter((item) => (item.id || item.eventId) !== targetDocId));
+    } catch (err) {
+      console.error("Failed to delete event:", err);
+      alert("Could not delete event. Please check permissions.");
     } finally {
       setActionInProgress(null);
     }
