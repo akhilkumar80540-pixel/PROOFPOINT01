@@ -1,8 +1,21 @@
 import { useEffect, useState } from 'react';
-import { QrCode, MapPin, ShieldCheck, PlusCircle, Users, Calendar, ArrowRight, Loader2, Award, Clock } from 'lucide-react';
+import { 
+  QrCode, 
+  MapPin, 
+  ShieldCheck, 
+  PlusCircle, 
+  Users, 
+  Calendar, 
+  ArrowRight, 
+  Loader2, 
+  Award, 
+  Clock, 
+  Archive, 
+  RotateCcw 
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db, auth } from '../firebase/config';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, updateDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
 export default function Dashboard() {
@@ -10,6 +23,8 @@ export default function Dashboard() {
   const [organizedEvents, setOrganizedEvents] = useState([]);
   const [attendedEvents, setAttendedEvents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('active'); // 'active' | 'archived'
+  const [actionInProgress, setActionInProgress] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -30,8 +45,7 @@ export default function Dashboard() {
         );
         const orgSnapshot = await getDocs(orgQuery);
         const orgList = orgSnapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() }))
-          // Client-side sort prevents missing index errors on Firestore
+          .map((d) => ({ id: d.id, ...d.data() }))
           .sort((a, b) => {
             const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt || 0).getTime();
             const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt || 0).getTime();
@@ -40,14 +54,14 @@ export default function Dashboard() {
 
         setOrganizedEvents(orgList);
 
-        // 2. Fetch Events attended by this user
+        // 2. Fetch Attendance records for this user from proofs collection
         const attQuery = query(
           collection(db, 'proofs'),
           where('attendeeId', '==', user.uid)
         );
         const attSnapshot = await getDocs(attQuery);
         const attList = attSnapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .map((d) => ({ id: d.id, ...d.data() }))
           .sort((a, b) => {
             const timeA = a.timestamp?.toMillis ? a.timestamp.toMillis() : new Date(a.timestamp || 0).getTime();
             const timeB = b.timestamp?.toMillis ? b.timestamp.toMillis() : new Date(b.timestamp || 0).getTime();
@@ -65,9 +79,41 @@ export default function Dashboard() {
     return () => unsubscribe();
   }, []);
 
+  // Handle Archiving / Restoring Events
+  const handleToggleArchive = async (event, shouldArchive) => {
+    const actionLabel = shouldArchive ? 'archive' : 'restore';
+    const confirmed = window.confirm(`Are you sure you want to ${actionLabel} "${event.name}"?`);
+    if (!confirmed) return;
+
+    setActionInProgress(event.id);
+    try {
+      const eventRef = doc(db, 'events', event.id);
+      await updateDoc(eventRef, {
+        archived: shouldArchive,
+        archivedAt: shouldArchive ? new Date().toISOString() : null
+      });
+
+      // Update local state without full reload
+      setOrganizedEvents((prev) =>
+        prev.map((item) =>
+          item.id === event.id ? { ...item, archived: shouldArchive } : item
+        )
+      );
+    } catch (err) {
+      console.error(`Failed to ${actionLabel} event:`, err);
+      alert(`Could not ${actionLabel} event. Please try again.`);
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const activeEvents = organizedEvents.filter((ev) => !ev.archived);
+  const archivedEvents = organizedEvents.filter((ev) => ev.archived);
+  const currentEventsList = activeTab === 'active' ? activeEvents : archivedEvents;
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      {/* Welcome & Stats Header */}
+      {/* Welcome Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-1">
           Welcome back{currentUser?.displayName ? `, ${currentUser.displayName}` : ''}
@@ -119,30 +165,51 @@ export default function Dashboard() {
 
       {/* SECTION 1: Events I Organized */}
       <div className="mb-12">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900">My Organized Events</h2>
-            <p className="text-sm text-gray-500">Events you created. Access dynamic QRs, attendee lists, and export data.</p>
+            <p className="text-sm text-gray-500">Manage attendees, present dynamic QRs, and anchor batches on-chain.</p>
           </div>
-          <Link 
-            to="/create-event" 
-            className="text-sm font-semibold text-primary hover:underline flex items-center gap-1"
-          >
-            + Create New
-          </Link>
+
+          <div className="flex items-center gap-3">
+            {/* Filter Tabs: Active vs Archived */}
+            <div className="bg-gray-100 p-1 rounded-xl flex items-center text-xs font-semibold">
+              <button
+                onClick={() => setActiveTab('active')}
+                className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'active' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Active ({activeEvents.length})
+              </button>
+              <button
+                onClick={() => setActiveTab('archived')}
+                className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'archived' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Archived ({archivedEvents.length})
+              </button>
+            </div>
+
+            <Link 
+              to="/create-event" 
+              className="text-sm font-semibold text-primary hover:underline flex items-center gap-1"
+            >
+              + Create New
+            </Link>
+          </div>
         </div>
 
         {loading ? (
           <div className="flex justify-center py-10">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
           </div>
-        ) : organizedEvents.length === 0 ? (
+        ) : currentEventsList.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-500">
-            You have not created any events yet. Click "Create Event" to get started.
+            {activeTab === 'active'
+              ? 'No active events found. Click "Create Event" to get started.'
+              : 'No archived events.'}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {organizedEvents.map((event) => (
+            {currentEventsList.map((event) => (
               <div 
                 key={event.id} 
                 className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 hover:shadow-md transition-shadow flex flex-col justify-between"
@@ -152,9 +219,16 @@ export default function Dashboard() {
                     <span className="font-mono text-xs font-bold text-primary bg-indigo-50 px-2.5 py-1 rounded">
                       {event.eventId}
                     </span>
-                    <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-medium">
-                      {event.radiusMeters}m radius
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-medium">
+                        {event.radiusMeters}m radius
+                      </span>
+                      {event.archived && (
+                        <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-semibold">
+                          Archived
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   <h3 className="text-lg font-bold text-gray-900 mb-1">{event.name}</h3>
@@ -180,14 +254,37 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between">
-                  <Link
-                    to={`/event-attendance/${event.eventId}`}
-                    className="inline-flex items-center gap-1.5 text-sm font-bold text-primary hover:text-indigo-800 transition-colors"
+                <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-3">
+                    <Link
+                      to={`/event-attendance/${event.eventId}`}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:text-indigo-800 transition-colors"
+                    >
+                      <Users className="w-3.5 h-3.5" /> Manage Roster
+                      <ArrowRight className="w-3 h-3" />
+                    </Link>
+                  </div>
+
+                  {/* Archive / Restore Button */}
+                  <button
+                    type="button"
+                    disabled={actionInProgress === event.id}
+                    onClick={() => handleToggleArchive(event, !event.archived)}
+                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+                    title={event.archived ? "Restore event to active" : "Archive event from active list"}
                   >
-                    <Users className="w-4 h-4" /> Manage Roster
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
+                    {actionInProgress === event.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
+                    ) : event.archived ? (
+                      <>
+                        <RotateCcw className="w-3.5 h-3.5 text-green-600" /> Restore
+                      </>
+                    ) : (
+                      <>
+                        <Archive className="w-3.5 h-3.5 text-gray-400" /> Archive
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
             ))}
