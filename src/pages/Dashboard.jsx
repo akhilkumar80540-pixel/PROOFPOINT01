@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
+import { Link } from 'react-router-dom';
 import { 
   QrCode, 
   MapPin, 
@@ -17,46 +19,36 @@ import {
   Check,
   Trash2
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { db, auth } from '../firebase/config';
 
-import { onAuthStateChanged } from 'firebase/auth';
+// Robust helper to extract standard JS timestamp
+const parseTimestamp = (val) => {
+  if (!val) return 0;
+  if (typeof val.toMillis === 'function') return val.toMillis();
+  if (typeof val.toDate === 'function') return val.toDate().getTime();
+  const parsed = new Date(val).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+// Safe event end-time parser
+const getEventEndTime = (event) => {
+  if (event.endTimestamp) return parseTimestamp(event.endTimestamp);
+  if (event.date) {
+    const timePart = event.endTime ? `T${event.endTime}` : 'T23:59:59';
+    const parsed = new Date(`${event.date}${timePart}`).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return parseTimestamp(event.startTime || event.createdAt);
+};
 
 export default function Dashboard() {
   const [currentUser, setCurrentUser] = useState(null);
   const [organizedEvents, setOrganizedEvents] = useState([]);
   const [attendedEvents, setAttendedEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('active'); // 'active' | 'archived'
+  const [activeTab, setActiveTab] = useState('live'); // 'live' | 'past' | 'archived'
   const [actionInProgress, setActionInProgress] = useState(null);
   const [copiedEventId, setCopiedEventId] = useState(null);
-
-  const handleShareEvent = async (event) => {
-    const shareUrl = `${window.location.origin}/scan-qr`;
-    const shareText = `📍 Check into "${event.name}" on ProofPoint!\nEvent ID: ${event.eventId}\nMark Attendance: ${shareUrl}`;
-
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `ProofPoint: ${event.name}`,
-          text: shareText,
-          url: shareUrl,
-        });
-        return;
-      } catch (err) {
-        // User cancelled or share failed, fallback to clipboard
-      }
-    }
-
-    // Fallback: Copy text directly to clipboard
-    try {
-      await navigator.clipboard.writeText(shareText);
-      setCopiedEventId(event.id);
-      setTimeout(() => setCopiedEventId(null), 2500);
-    } catch (err) {
-      console.error("Failed to copy:", err);
-    }
-  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -70,39 +62,23 @@ export default function Dashboard() {
       }
 
       try {
-        // 1. Fetch Events created by this specific user
-        const orgQuery = query(
-          collection(db, 'events'),
-          where('organizerId', '==', user.uid)
-        );
-        const orgSnapshot = await getDocs(orgQuery);
+        const [orgSnapshot, attSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'events'), where('organizerId', '==', user.uid))),
+          getDocs(query(collection(db, 'proofs'), where('attendeeId', '==', user.uid)))
+        ]);
+
         const orgList = orgSnapshot.docs
           .map((d) => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => {
-            const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt || 0).getTime();
-            const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt || 0).getTime();
-            return timeB - timeA;
-          });
+          .sort((a, b) => parseTimestamp(b.createdAt) - parseTimestamp(a.createdAt));
 
-        setOrganizedEvents(orgList);
-
-        // 2. Fetch Attendance records for this user from proofs collection
-        const attQuery = query(
-          collection(db, 'proofs'),
-          where('attendeeId', '==', user.uid)
-        );
-        const attSnapshot = await getDocs(attQuery);
         const attList = attSnapshot.docs
           .map((d) => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => {
-            const timeA = a.timestamp?.toMillis ? a.timestamp.toMillis() : new Date(a.timestamp || 0).getTime();
-            const timeB = b.timestamp?.toMillis ? b.timestamp.toMillis() : new Date(b.timestamp || 0).getTime();
-            return timeB - timeA;
-          });
+          .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
+        setOrganizedEvents(orgList);
         setAttendedEvents(attList);
       } catch (error) {
-        console.error("Error loading dashboard data:", error);
+        console.error('Error loading dashboard data:', error);
       } finally {
         setLoading(false);
       }
@@ -110,25 +86,46 @@ export default function Dashboard() {
 
     return () => unsubscribe();
   }, []);
-// Handle Archiving / Restoring Events
+
+  const handleShareEvent = async (event) => {
+    const shareUrl = `${window.location.origin}/scan-qr`;
+    const shareText = `📍 Check into "${event.name}" on ProofPoint!\nEvent ID: ${event.eventId}\nMark Attendance: ${shareUrl}`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `ProofPoint: ${event.name}`,
+          text: shareText,
+          url: shareUrl,
+        });
+        return;
+      } catch {
+        // Continue to fallback clipboard copy if dismissed or unsupported
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareText);
+      setCopiedEventId(event.id);
+      setTimeout(() => setCopiedEventId(null), 2500);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
   const handleToggleArchive = async (event, shouldArchive) => {
     const actionLabel = shouldArchive ? 'archive' : 'restore';
-    const confirmed = window.confirm(`Are you sure you want to ${actionLabel} "${event.name}"?`);
-    if (!confirmed) return;
+    if (!window.confirm(`Are you sure you want to ${actionLabel} "${event.name}"?`)) return;
 
     setActionInProgress(event.id);
     try {
-      const eventRef = doc(db, 'events', event.id);
-      await updateDoc(eventRef, {
+      await updateDoc(doc(db, 'events', event.id), {
         archived: shouldArchive,
         archivedAt: shouldArchive ? new Date().toISOString() : null
       });
 
-      // Update local state without full reload
       setOrganizedEvents((prev) =>
-        prev.map((item) =>
-          item.id === event.id ? { ...item, archived: shouldArchive } : item
-        )
+        prev.map((item) => (item.id === event.id ? { ...item, archived: shouldArchive } : item))
       );
     } catch (err) {
       console.error(`Failed to ${actionLabel} event:`, err);
@@ -138,38 +135,68 @@ export default function Dashboard() {
     }
   };
 
-  // Permanently Delete Event from Firestore
   const handlePermanentDelete = async (event) => {
-    const confirmed = window.confirm(
-      `⚠️ PERMANENT DELETE WARNING:\n\nAre you sure you want to permanently delete "${event.name}"?\nThis cannot be undone, but attendee proof logs will remain intact.`
-    );
-    if (!confirmed) return;
-
-    const targetDocId = event.id || event.eventId;
-    if (!targetDocId) {
-      alert("Error: Event document ID is missing.");
+    if (!window.confirm(`⚠️ PERMANENT DELETE WARNING:\n\nDelete "${event.name}"? This cannot be undone.`)) {
       return;
     }
 
     setActionInProgress(event.id);
     try {
-      await deleteDoc(doc(db, 'events', targetDocId));
-      setOrganizedEvents((prev) => prev.filter((item) => (item.id || item.eventId) !== targetDocId));
+      await deleteDoc(doc(db, 'events', event.id));
+      setOrganizedEvents((prev) => prev.filter((item) => item.id !== event.id));
     } catch (err) {
-      console.error("Failed to delete event:", err);
-      alert("Could not delete event. Please check permissions.");
+      console.error('Failed to delete event:', err);
+      alert('Could not delete event. Please check permissions.');
     } finally {
       setActionInProgress(null);
     }
   };
 
-  const activeEvents = organizedEvents.filter((ev) => !ev.archived);
-  const archivedEvents = organizedEvents.filter((ev) => ev.archived);
-  const currentEventsList = activeTab === 'active' ? activeEvents : archivedEvents;
+  // Memoized 3-way event separation
+  const { liveEvents, pastEvents, archivedEvents } = useMemo(() => {
+    const nowMs = Date.now();
+    const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+
+    const live = [];
+    const past = [];
+    const archived = [];
+
+    organizedEvents.forEach((event) => {
+      const endMs = getEventEndTime(event);
+
+      if (event.archived || endMs < sevenDaysAgoMs) {
+        archived.push(event);
+      } else if (endMs >= nowMs) {
+        live.push(event);
+      } else {
+        past.push(event);
+      }
+    });
+
+    return { liveEvents: live, pastEvents: past, archivedEvents: archived };
+  }, [organizedEvents]);
+
+  const currentEventsList = useMemo(() => {
+    if (activeTab === 'live') return liveEvents;
+    if (activeTab === 'past') return pastEvents;
+    return archivedEvents;
+  }, [activeTab, liveEvents, pastEvents, archivedEvents]);
+
+  const getEmptyStateMessage = () => {
+    switch (activeTab) {
+      case 'live':
+        return 'No live or upcoming events found. Click "Create Event" to get started.';
+      case 'past':
+        return 'No past events found within the last 7 days.';
+      case 'archived':
+        return 'No archived events found.';
+      default:
+        return 'No events found.';
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      {/* Welcome Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-1">
           Welcome back{currentUser?.displayName ? `, ${currentUser.displayName}` : ''}
@@ -177,14 +204,14 @@ export default function Dashboard() {
         <p className="text-gray-600">Manage your events, verify locations, and review verified attendance proofs.</p>
       </div>
 
-      {/* Quick Action Cards */}
+      {/* Quick Action Navigation */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
         <Link 
           to="/create-event" 
           className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow flex items-center gap-4 group"
         >
           <div className="bg-indigo-50 p-4 rounded-xl group-hover:bg-indigo-100 transition-colors">
-            <PlusCircle className="h-7 w-7 text-primary" />
+            <PlusCircle className="h-7 w-7 text-indigo-600" />
           </div>
           <div>
             <h3 className="text-base font-semibold text-gray-900">Create Event</h3>
@@ -219,7 +246,7 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* SECTION 1: Events I Organized */}
+      {/* SECTION 1: Organized Events */}
       <div className="mb-12">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
@@ -228,17 +255,33 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Filter Tabs: Active vs Archived */}
             <div className="bg-gray-100 p-1 rounded-xl flex items-center text-xs font-semibold">
               <button
-                onClick={() => setActiveTab('active')}
-                className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'active' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}
+                type="button"
+                onClick={() => setActiveTab('live')}
+                className={`px-3 py-1.5 rounded-lg transition ${
+                  activeTab === 'live' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                }`}
               >
-                Active ({activeEvents.length})
+                Live & Upcoming ({liveEvents.length})
               </button>
+
               <button
+                type="button"
+                onClick={() => setActiveTab('past')}
+                className={`px-3 py-1.5 rounded-lg transition ${
+                  activeTab === 'past' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Recent Past ({pastEvents.length})
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setActiveTab('archived')}
-                className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'archived' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}
+                className={`px-3 py-1.5 rounded-lg transition ${
+                  activeTab === 'archived' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                }`}
               >
                 Archived ({archivedEvents.length})
               </button>
@@ -246,7 +289,7 @@ export default function Dashboard() {
 
             <Link 
               to="/create-event" 
-              className="text-sm font-semibold text-primary hover:underline flex items-center gap-1"
+              className="text-sm font-semibold text-indigo-600 hover:underline flex items-center gap-1"
             >
               + Create New
             </Link>
@@ -255,13 +298,11 @@ export default function Dashboard() {
 
         {loading ? (
           <div className="flex justify-center py-10">
-            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
           </div>
         ) : currentEventsList.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-500">
-            {activeTab === 'active'
-              ? 'No active events found. Click "Create Event" to get started.'
-              : 'No archived events.'}
+            {getEmptyStateMessage()}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -272,7 +313,7 @@ export default function Dashboard() {
               >
                 <div>
                   <div className="flex justify-between items-start mb-2">
-                    <span className="font-mono text-xs font-bold text-primary bg-indigo-50 px-2.5 py-1 rounded">
+                    <span className="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded">
                       {event.eventId}
                     </span>
                     <div className="flex items-center gap-1.5">
@@ -296,97 +337,111 @@ export default function Dashboard() {
                     <div className="flex items-center gap-1.5">
                       <Calendar className="w-3.5 h-3.5 text-gray-400" />
                       <span>
-                        {event?.startTime?.toDate
-                          ? event.startTime.toDate().toLocaleDateString()
-                          : event?.startTime
-                          ? new Date(event.startTime).toLocaleDateString()
-                          : 'Date not set'}
+                        {event.startTime
+                          ? new Date(parseTimestamp(event.startTime)).toLocaleDateString()
+                          : event.date || 'Date not set'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-gray-400" />
-                      <span className="font-mono">{event.latitude?.toFixed(4)}, {event.longitude?.toFixed(4)}</span>
-                    </div>
+                    {event.latitude !== undefined && event.longitude !== undefined && (
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-gray-400" />
+                        <span className="font-mono">{event.latitude.toFixed(4)}, {event.longitude.toFixed(4)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
-{/* ✅ REPLACED WITH THIS */}
-<div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between gap-2">
-  <div className="flex items-center gap-3">
-    <Link
-      to={`/event-attendance/${event.eventId}`}
-      className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:text-indigo-800 transition-colors"
-    >
-      <Users className="w-3.5 h-3.5" /> Manage Roster
-      <ArrowRight className="w-3 h-3" />
-    </Link>
-  </div>
 
-  <div className="flex items-center gap-1.5">
-    {/* Share / Copy Event ID Button */}
-    <button
-      type="button"
-      onClick={() => handleShareEvent(event)}
-      className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
-      title="Share Event ID & Link"
-    >
-      {copiedEventId === event.id ? (
-        <>
-          <Check className="w-3.5 h-3.5 text-green-600" />
-          <span className="text-green-600 font-medium">Copied!</span>
-        </>
-      ) : (
-        <>
-          <Share2 className="w-3.5 h-3.5 text-gray-500" />
-          <span>Share</span>
-        </>
-      )}
-    </button>
+                <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between gap-2">
+                  <Link
+                    to={`/event-attendance/${event.eventId || event.id}`}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    <Users className="w-3.5 h-3.5" /> Manage Roster
+                    <ArrowRight className="w-3 h-3" />
+                  </Link>
 
-    {/* Archive / Restore Button */}
-    <button
-      type="button"
-      disabled={actionInProgress === event.id}
-      onClick={() => handleToggleArchive(event, !event.archived)}
-      className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
-      title={event.archived ? "Restore event to active" : "Archive event from active list"}
-    >
-      {actionInProgress === event.id ? (
-        <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
-      ) : event.archived ? (
-        <>
-          <RotateCcw className="w-3.5 h-3.5 text-green-600" /> Restore
-        </>
-      ) : (
-        <>
-          <Archive className="w-3.5 h-3.5 text-gray-400" /> Archive
-        </>
-      )}
-    </button>
+                  <div className="flex items-center gap-1.5">
+                    {activeTab !== 'archived' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleShareEvent(event)}
+                          className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+                          title="Share Event ID & Link"
+                        >
+                          {copiedEventId === event.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-green-600" />
+                              <span className="text-green-600 font-medium">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Share2 className="w-3.5 h-3.5 text-gray-500" />
+                              <span>Share</span>
+                            </>
+                          )}
+                        </button>
 
-    {/* 👇 YEH ADD KAREIN: Delete Permanently Button (Sirf Archived tab me dikhega) */}
-    {event.archived && (
-      <button
-        type="button"
-        disabled={actionInProgress === event.id}
-        onClick={() => handlePermanentDelete(event)}
-        className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-lg border border-red-200 transition"
-        title="Permanently Delete Event"
-      >
-        <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete
-      </button>
-    )}
+                        <button
+                          type="button"
+                          disabled={actionInProgress === event.id}
+                          onClick={() => handleToggleArchive(event, true)}
+                          className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+                          title="Archive event"
+                        >
+                          {actionInProgress === event.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
+                          ) : (
+                            <>
+                              <Archive className="w-3.5 h-3.5 text-gray-400" /> Archive
+                            </>
+                          )}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={actionInProgress === event.id}
+                          onClick={() => handleToggleArchive(event, false)}
+                          className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-800 bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-lg border border-gray-200 transition"
+                          title="Restore to active"
+                        >
+                          {actionInProgress === event.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
+                          ) : (
+                            <>
+                              <RotateCcw className="w-3.5 h-3.5 text-green-600" /> Restore
+                            </>
+                          )}
+                        </button>
 
-  </div>
-</div>
-
-
+                        <button
+                          type="button"
+                          disabled={actionInProgress === event.id}
+                          onClick={() => handlePermanentDelete(event)}
+                          className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-lg border border-red-200 transition"
+                          title="Permanently Delete Event"
+                        >
+                          {actionInProgress === event.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete
+                            </>
+                          )}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* SECTION 2: Events I Attended */}
+      {/* SECTION 2: Attended Events */}
       <div className="border-t border-gray-200 pt-8">
         <div className="mb-6">
           <h2 className="text-xl font-bold text-gray-900">My Attendance History</h2>
@@ -395,7 +450,7 @@ export default function Dashboard() {
 
         {loading ? (
           <div className="flex justify-center py-6">
-            <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            <Loader2 className="w-6 h-6 animate-spin text-indigo-600" />
           </div>
         ) : attendedEvents.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-500">
@@ -414,10 +469,8 @@ export default function Dashboard() {
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 mt-1">
                       <span className="flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5" />
-                        {record.timestamp?.toDate
-                          ? record.timestamp.toDate().toLocaleString()
-                          : record.timestamp
-                          ? new Date(record.timestamp).toLocaleString()
+                        {record.timestamp
+                          ? new Date(parseTimestamp(record.timestamp)).toLocaleString()
                           : 'Recorded'}
                       </span>
                       {record.distanceMeters !== undefined && (
@@ -433,7 +486,7 @@ export default function Dashboard() {
                   </span>
                   <Link
                     to={`/verify?id=${record.proofId || record.id}`}
-                    className="text-xs bg-indigo-50 text-primary font-semibold px-3 py-1.5 rounded hover:bg-indigo-100 transition"
+                    className="text-xs bg-indigo-50 text-indigo-600 font-semibold px-3 py-1.5 rounded hover:bg-indigo-100 transition"
                   >
                     View Proof
                   </Link>
