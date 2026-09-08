@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { db } from '../firebase/config';
+import { db, auth } from '../firebase/config';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { QRCodeSVG } from 'qrcode.react';
 import { Calendar, MapPin, Check, Copy, Share2, Users, RefreshCw, Crosshair } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { generateRollingToken, getCurrentWindow, TOKEN_WINDOW_SECONDS } from '../utils/tokenUtils';
 
 // Leaflet Imports
@@ -18,7 +18,6 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 });
 
-// Component to handle map clicks and sync center
 function LocationPicker({ position, setPosition }) {
   const map = useMap();
   
@@ -40,10 +39,11 @@ function LocationPicker({ position, setPosition }) {
 }
 
 export default function CreateEvent() {
+  const navigate = useNavigate();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   
-  // Default to IIIT Una coordinates (or anywhere central)
+  // Default coordinates
   const [position, setPosition] = useState([31.4808, 76.1991]);
   const [radiusMeters, setRadiusMeters] = useState(200);
   
@@ -76,12 +76,22 @@ export default function CreateEvent() {
     setLoading(true);
 
     try {
+      const user = auth.currentUser;
+      if (!user) {
+        alert("You must be logged in to create an event.");
+        navigate('/login');
+        return;
+      }
+
       const eventId = 'EV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
       
       const newEvent = {
         eventId,
         name,
         description,
+        organizerId: user.uid,
+        organizerEmail: user.email || '',
+        status: 'active',
         latitude: parseFloat(position[0].toFixed(6)),
         longitude: parseFloat(position[1].toFixed(6)),
         radiusMeters: parseInt(radiusMeters, 10),
@@ -94,7 +104,7 @@ export default function CreateEvent() {
       setCreatedEvent(newEvent);
     } catch (err) {
       console.error(err);
-      alert("Failed to create event");
+      alert("Failed to create event: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -158,6 +168,17 @@ export default function CreateEvent() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. System Design Lecture"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
+                />
+              </div>
+
+              <div className="col-span-1 md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Brief details about the event..."
+                  rows={2}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
                 />
               </div>
@@ -298,7 +319,6 @@ export default function CreateEvent() {
             </div>
           </div>
           
-          {/* Share & Action Buttons */}
           <div className="space-y-3">
             <div className="flex flex-col sm:flex-row gap-3">
               <button

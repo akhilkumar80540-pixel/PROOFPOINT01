@@ -16,6 +16,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 
-// THESE TWO LINES ARE CRITICAL
+// Export initialized services
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+// Re-export Firestore methods to guarantee clean resolution across bundlers
+export { collection, query, where, getDocs, doc, getDoc, addDoc, setDoc, updateDoc } from "firebase/firestore";
