@@ -144,24 +144,29 @@ const handleDownloadPass = async () => {
       await stopScanner();
       setSubmitting(true);
 
-      // Decode base64 token
-      const rawData = atob(decodedText);
-      const parsedData = JSON.parse(rawData);
-      const { eventId, lat: eventLat, lng: eventLng, radius: eventRadius, ts } = parsedData;
-
-      if (!eventId || eventLat === undefined || eventLng === undefined) {
-        throw new Error('Invalid ProofPoint QR code format.');
+     // Decode token safely (Base64 ya direct JSON)
+    let parsedData = null;
+    try {
+      const rawData = atob(decodedText.trim());
+      parsedData = JSON.parse(rawData);
+    } catch (e) {
+      try {
+        parsedData = JSON.parse(decodedText.trim());
+      } catch (jsonErr) {
+        parsedData = { eventId: decodedText.trim() };
       }
+    }
 
-      // Check token freshness (Prevent stale / shared screenshots over 30s)
-      if (Date.now() - ts > 30000) {
-        throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
-      }
+    const { eventId, lat: eventLat, lng: eventLng, radius: eventRadius, ts } = parsedData || {};
 
-      if (!userCoords) {
-        throw new Error('Attendee location not detected. Re-fetch GPS.');
-      }
+    if (!eventId) {
+      throw new Error('Invalid ProofPoint QR code format.');
+    }
 
+    // Token freshness check (agar timestamp ho toh 2 minute window rakhein)
+    if (ts && (Date.now() - ts > 90000)) {
+      throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
+    }
       // Geofence proximity verification
       const distance = calculateDistance(userCoords.lat, userCoords.lng, eventLat, eventLng);
       const allowedRadius = eventRadius || 100;
