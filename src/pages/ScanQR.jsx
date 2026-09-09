@@ -130,7 +130,54 @@ const handleDownloadPass = async () => {
   };
 
   // Cleanup camera on unmount
-  useEffect(() => {
+ // 1. Debugging ke liye scan string print karein
+    console.log("Raw Scanned Data:", decodedText);
+
+    let parsedData = null;
+    const cleanText = decodedText.trim();
+
+    // 2. Base64 Decode Handle karein (Unicode safe)
+    try {
+      const decodedString = atob(cleanText);
+      parsedData = JSON.parse(decodedString);
+    } catch (b64Err) {
+      // Direct JSON check
+      try {
+        parsedData = JSON.parse(cleanText);
+      } catch (jsonErr) {
+        // URL query parameter fallback (agar URL scan ho jaye)
+        try {
+          const urlObj = new URL(cleanText);
+          const dataParam = urlObj.searchParams.get('data') || urlObj.searchParams.get('token');
+          if (dataParam) {
+            parsedData = JSON.parse(atob(dataParam));
+          } else {
+            parsedData = { eventId: cleanText };
+          }
+        } catch (urlErr) {
+          parsedData = { eventId: cleanText };
+        }
+      }
+    }
+
+    console.log("Parsed Data Object:", parsedData);
+
+    // Event ID nikalen (chahe eventId ho, id ho, ya direct string)
+    const targetEventId = parsedData?.eventId || parsedData?.id || (typeof parsedData === 'string' ? parsedData : null);
+
+    if (!targetEventId || targetEventId === 'undefined') {
+      throw new Error('Invalid ProofPoint QR code format.');
+    }
+
+    const eventLat = parsedData.lat ?? parsedData.latitude;
+    const eventLng = parsedData.lng ?? parsedData.longitude;
+    const eventRadius = parsedData.radius ?? parsedData.radiusMeters ?? 100;
+    const ts = parsedData.ts || parsedData.timestamp;
+
+    // Token Freshness (90 seconds)
+    if (ts && (Date.now() - Number(ts) > 90000)) {
+      throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
+    } useEffect(() => {
     return () => {
       if (scannerRef.current && scannerRef.current.isScanning) {
         scannerRef.current.stop().catch(() => {});
@@ -167,15 +214,34 @@ const handleDownloadPass = async () => {
     if (ts && (Date.now() - ts > 90000)) {
       throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
     }
+// --- YAHAN SE UPDATE KAREIN ---
+      let finalLat = eventLat;
+      let finalLng = eventLng;
+      let finalRadius = eventRadius;
+
+      // Agar QR se coordinates nahi mile, toh Firestore se event dhoondhein
+      if (finalLat === undefined || finalLng === undefined) {
+        const qEvent = query(collection(db, 'events'), where('eventId', '==', targetEventId));
+        const qSnap = await getDocs(qEvent);
+
+        if (!qSnap.empty) {
+          const evData = qSnap.docs[0].data();
+          finalLat = evData.lat ?? evData.latitude;
+          finalLng = evData.lng ?? evData.longitude;
+          finalRadius = evData.radius ?? evData.radiusMeters ?? 100;
+        }
+      }
+
       // Geofence proximity verification
-      const distance = calculateDistance(userCoords.lat, userCoords.lng, eventLat, eventLng);
-      const allowedRadius = eventRadius || 100;
+      const distance = calculateDistance(userCoords.lat, userCoords.lng, finalLat, finalLng);
+      const allowedRadius = Number(finalRadius) || 100;
 
       if (distance > allowedRadius) {
         throw new Error(
           `Geofence Failed: You are ${Math.round(distance)}m away. Maximum allowed perimeter is ${allowedRadius}m.`
         );
       }
+      // --- YAHAN TAK ---
 
       // Check duplicate attendance
       const currentUserId = auth.currentUser?.uid || 'anonymous_user';
