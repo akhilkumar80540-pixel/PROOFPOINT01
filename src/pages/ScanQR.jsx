@@ -131,172 +131,130 @@ const handleDownloadPass = async () => {
 
   // Cleanup camera on unmount
  // 1. Debugging ke liye scan string print karein
-    console.log("Raw Scanned Data:", decodedText);
-
-    let parsedData = null;
-    const cleanText = decodedText.trim();
-
-    // 2. Base64 Decode Handle karein (Unicode safe)
-    try {
-      const decodedString = atob(cleanText);
-      parsedData = JSON.parse(decodedString);
-    } catch (b64Err) {
-      // Direct JSON check
-      try {
-        parsedData = JSON.parse(cleanText);
-      } catch (jsonErr) {
-        // URL query parameter fallback (agar URL scan ho jaye)
-        try {
-          const urlObj = new URL(cleanText);
-          const dataParam = urlObj.searchParams.get('data') || urlObj.searchParams.get('token');
-          if (dataParam) {
-            parsedData = JSON.parse(atob(dataParam));
-          } else {
-            parsedData = { eventId: cleanText };
-          }
-        } catch (urlErr) {
-          parsedData = { eventId: cleanText };
-        }
-      }
-    }
-
-    console.log("Parsed Data Object:", parsedData);
-
-    // Event ID nikalen (chahe eventId ho, id ho, ya direct string)
-    const targetEventId = parsedData?.eventId || parsedData?.id || (typeof parsedData === 'string' ? parsedData : null);
-
-    if (!targetEventId || targetEventId === 'undefined') {
-      throw new Error('Invalid ProofPoint QR code format.');
-    }
-
-    const eventLat = parsedData.lat ?? parsedData.latitude;
-    const eventLng = parsedData.lng ?? parsedData.longitude;
-    const eventRadius = parsedData.radius ?? parsedData.radiusMeters ?? 100;
-    const ts = parsedData.ts || parsedData.timestamp;
-
-    // Token Freshness (90 seconds)
-    if (ts && (Date.now() - Number(ts) > 90000)) {
-      throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
-    } useEffect(() => {
-    return () => {
-      if (scannerRef.current && scannerRef.current.isScanning) {
-        scannerRef.current.stop().catch(() => {});
-      }
-    };
-  }, []);
+   
 
   // 3. Handle Scanned QR payload
-  const onScanSuccess = async (decodedText) => {
+ const onScanSuccess = async (decodedText) => {
     try {
       await stopScanner();
       setSubmitting(true);
 
-     // Decode token safely (Base64 ya direct JSON)
-    let parsedData = null;
-    try {
-      const rawData = atob(decodedText.trim());
-      parsedData = JSON.parse(rawData);
-    } catch (e) {
+      console.log("Raw Scanned Data:", decodedText);
+
+      let parsedData = null;
+      const cleanText = decodedText.trim();
+
+      // 1. Safe Decode
       try {
-        parsedData = JSON.parse(decodedText.trim());
-      } catch (jsonErr) {
-        parsedData = { eventId: decodedText.trim() };
+        const decodedString = atob(cleanText);
+        parsedData = JSON.parse(decodedString);
+      } catch (b64Err) {
+        try {
+          parsedData = JSON.parse(cleanText);
+        } catch (jsonErr) {
+          try {
+            const urlObj = new URL(cleanText);
+            const dataParam = urlObj.searchParams.get('data') || urlObj.searchParams.get('token');
+            if (dataParam) {
+              parsedData = JSON.parse(atob(dataParam));
+            } else {
+              parsedData = { eventId: cleanText };
+            }
+          } catch (urlErr) {
+            parsedData = { eventId: cleanText };
+          }
+        }
       }
-    }
 
-    const { eventId, lat: eventLat, lng: eventLng, radius: eventRadius, ts } = parsedData || {};
+      console.log("Parsed Data Object:", parsedData);
 
-    if (!eventId) {
-      throw new Error('Invalid ProofPoint QR code format.');
-    }
+      const targetEventId = parsedData?.eventId || parsedData?.id || (typeof parsedData === 'string' ? parsedData : null);
 
-    // Token freshness check (agar timestamp ho toh 2 minute window rakhein)
-    if (ts && (Date.now() - ts > 90000)) {
-      throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
-    }
-// --- YAHAN SE UPDATE KAREIN ---
-      let finalLat = eventLat;
-      let finalLng = eventLng;
-      let finalRadius = eventRadius;
+      if (!targetEventId || targetEventId === 'undefined') {
+        throw new Error('Invalid ProofPoint QR code format.');
+      }
 
-      // Agar QR se coordinates nahi mile, toh Firestore se event dhoondhein
-      if (finalLat === undefined || finalLng === undefined) {
+      let eventLat = parsedData.lat ?? parsedData.latitude;
+      let eventLng = parsedData.lng ?? parsedData.longitude;
+      let eventRadius = parsedData.radius ?? parsedData.radiusMeters ?? 100;
+      const ts = parsedData.ts || parsedData.timestamp;
+
+      if (ts && (Date.now() - Number(ts) > 90000)) {
+        throw new Error('QR Token expired. Please scan the live rolling QR from the screen.');
+      }
+
+      // 2. Fallback to Firestore for Location
+      if (eventLat === undefined || eventLng === undefined) {
         const qEvent = query(collection(db, 'events'), where('eventId', '==', targetEventId));
         const qSnap = await getDocs(qEvent);
 
         if (!qSnap.empty) {
           const evData = qSnap.docs[0].data();
-          finalLat = evData.lat ?? evData.latitude;
-          finalLng = evData.lng ?? evData.longitude;
-          finalRadius = evData.radius ?? evData.radiusMeters ?? 100;
+          eventLat = evData.lat ?? evData.latitude;
+          eventLng = evData.lng ?? evData.longitude;
+          eventRadius = evData.radius ?? evData.radiusMeters ?? 100;
         }
       }
 
-      // Geofence proximity verification
-      const distance = calculateDistance(userCoords.lat, userCoords.lng, finalLat, finalLng);
-      const allowedRadius = Number(finalRadius) || 100;
+      if (eventLat === undefined || eventLng === undefined) {
+        throw new Error('Event venue location coordinates not found in Database.');
+      }
+
+      if (!userCoords) {
+        throw new Error('Attendee location not detected. Re-fetch GPS.');
+      }
+
+      // 3. Geofence Distance Calculation
+      const distance = calculateDistance(userCoords.lat, userCoords.lng, eventLat, eventLng);
+      const allowedRadius = Number(eventRadius) || 100;
 
       if (distance > allowedRadius) {
-        throw new Error(
-          `Geofence Failed: You are ${Math.round(distance)}m away. Maximum allowed perimeter is ${allowedRadius}m.`
-        );
+        throw new Error(`Geofence Failed: You are ${Math.round(distance)}m away. Maximum allowed perimeter is ${allowedRadius}m.`);
       }
-      // --- YAHAN TAK ---
 
-      // Check duplicate attendance
+      // 4. Check duplicate attendance
       const currentUserId = auth.currentUser?.uid || 'anonymous_user';
       const q = query(
         collection(db, 'proofs'),
-        where('eventId', '==', eventId),
+        where('eventId', '==', targetEventId),
         where('attendeeId', '==', currentUserId)
       );
+      
       const duplicateSnap = await getDocs(q);
-
       if (!duplicateSnap.empty) {
         throw new Error('Attendance already recorded for this event.');
       }
 
-      // Generate Cryptographic Proof
-     // Generate Cryptographic Proof
-    const proofId = `PRF-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-    const currentUserEmail = auth.currentUser?.email || 'Anonymous';
-    const currentUserName = auth.currentUser?.displayName || currentUserEmail.split('@')[0];
+      // 5. Save Proof
+      const proofId = `PRF-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      const currentUserEmail = auth.currentUser?.email || 'Anonymous';
+      const currentUserName = auth.currentUser?.displayName || currentUserEmail.split('@')[0];
 
-    const proofRecord = {
-      proofId,
-      eventId,
-      attendeeId: currentUserId,
-      userId: currentUserId,
-      attendeeEmail: currentUserEmail,
-      attendeeName: currentUserName,
-      timestamp: Date.now(),
-      createdAt: Date.now(),
-      distanceMeters: distance,
-      attendeeLat: userCoords.lat,
-      attendeeLng: userCoords.lng,
-      verified: true,
-    };
-
-    await addDoc(collection(db, 'proofs'), proofRecord);
-
-      // Trigger Confetti Celebration
-      confetti({
-        particleCount: 70,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#f97316', '#fb923c', '#10b981', '#ffffff'],
+      await addDoc(collection(db, 'proofs'), {
+        proofId,
+        eventId: targetEventId,
+        attendeeId: currentUserId,
+        userId: currentUserId,
+        attendeeEmail: currentUserEmail,
+        attendeeName: currentUserName,
+        timestamp: Date.now(),
+        createdAt: Date.now(),
+        distanceMeters: distance,
+        attendeeLat: userCoords.lat,
+        attendeeLng: userCoords.lng,
+        verified: true,
       });
 
-      setVerifiedProof(proofRecord);
-    } catch (error) {
-      console.error('Scan handling error:', error);
-      setStatusMessage({ type: 'error', text: error.message || 'Verification failed.' });
+      // Verification Success redirect
+      navigate(`/verify?id=${proofId}`);
+
+    } catch (err) {
+      console.error('Scan Error:', err);
+      setError(err.message || 'Invalid ProofPoint QR code format.');
     } finally {
       setSubmitting(false);
     }
-  };
-
-  return (
+  };  return (
     <div className="min-h-screen w-full bg-[#08080a] text-slate-100 selection:bg-orange-500 selection:text-white p-4 sm:p-8">
       {/* Ambient background glow */}
       <div className="fixed top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-orange-600/10 rounded-full blur-[160px] pointer-events-none" />
