@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import confetti from 'canvas-confetti';
-import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+//import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Link } from 'react-router-dom';
 import ConfirmModal from '../components/ConfirmModal';
@@ -93,7 +94,6 @@ export default function Dashboard() {
       frame();
     }
   }, []);
-
 useEffect(() => {
     let unsubscribeOrg = () => {};
     let unsubscribeAtt = () => {};
@@ -108,51 +108,67 @@ useEffect(() => {
         return;
       }
 
-      // 1. Realtime listener for Organized Events
-      const orgQuery = query(
-        collection(db, 'events'),
-        where('organizerId', '==', user.uid)
-      );
+      setLoading(true);
 
-      unsubscribeOrg = onSnapshot(
-        orgQuery,
-        (snapshot) => {
-          const orgList = snapshot.docs
-            .map((d) => ({ id: d.id, ...d.data() }))
-            .sort((a, b) => {
-              const timeA = typeof a.createdAt === 'number' ? a.createdAt : (parseTimestamp ? parseTimestamp(a.createdAt) : 0);
-              const timeB = typeof b.createdAt === 'number' ? b.createdAt : (parseTimestamp ? parseTimestamp(b.createdAt) : 0);
-              return timeB - timeA;
-            });
-          setOrganizedEvents(orgList);
-        },
-        (error) => console.error('Error in organized events listener:', error)
-      );
+      // 1. Organized Events Listener
+      try {
+        const orgQuery = query(
+          collection(db, 'events'),
+          where('organizerId', '==', user.uid)
+        );
 
-      // 2. Realtime listener for Attendance History (proofs)
-      const attQuery = query(
-        collection(db, 'proofs'),
-        where('attendeeId', '==', user.uid)
-      );
+        unsubscribeOrg = onSnapshot(
+          orgQuery,
+          (snapshot) => {
+            const orgList = snapshot.docs
+              .map((d) => ({ id: d.id, ...d.data() }))
+              .sort((a, b) => {
+                const timeA = typeof a.createdAt === 'number' ? a.createdAt : (a.createdAt?.toMillis ? a.createdAt.toMillis() : 0);
+                const timeB = typeof b.createdAt === 'number' ? b.createdAt : (b.createdAt?.toMillis ? b.createdAt.toMillis() : 0);
+                return timeB - timeA;
+              });
+            setOrganizedEvents(orgList);
+            setLoading(false);
+          },
+          (error) => {
+            console.error('Error fetching organized events:', error);
+            setLoading(false);
+          }
+        );
+      } catch (err) {
+        console.error('Org query failed:', err);
+        setLoading(false);
+      }
 
-      unsubscribeAtt = onSnapshot(
-        attQuery,
-        (snapshot) => {
-          const attList = snapshot.docs
-            .map((d) => ({ id: d.id, ...d.data() }))
-            .sort((a, b) => {
-              const timeA = a.timestamp || a.createdAt || (parseTimestamp ? parseTimestamp(a.timestamp) : 0);
-              const timeB = b.timestamp || b.createdAt || (parseTimestamp ? parseTimestamp(b.timestamp) : 0);
-              return Number(timeB) - Number(timeA);
-            });
-          setAttendedEvents(attList);
-          setLoading(false);
-        },
-        (error) => {
-          console.error('Error in attendance history listener:', error);
-          setLoading(false);
-        }
-      );
+      // 2. Attendance History Listener (Proof check)
+      try {
+        const attQuery = query(
+          collection(db, 'proofs'),
+          where('attendeeId', '==', user.uid)
+        );
+
+        unsubscribeAtt = onSnapshot(
+          attQuery,
+          (snapshot) => {
+            const attList = snapshot.docs
+              .map((d) => ({ id: d.id, ...d.data() }))
+              .sort((a, b) => {
+                const timeA = a.timestamp || a.createdAt || 0;
+                const timeB = b.timestamp || b.createdAt || 0;
+                return Number(timeB) - Number(timeA);
+              });
+            setAttendedEvents(attList);
+            setLoading(false);
+          },
+          (error) => {
+            console.error('Error fetching attendance history:', error);
+            setLoading(false);
+          }
+        );
+      } catch (err) {
+        console.error('Att query failed:', err);
+        setLoading(false);
+      }
     });
 
     return () => {
