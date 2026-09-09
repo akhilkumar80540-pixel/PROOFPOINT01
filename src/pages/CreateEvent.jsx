@@ -1,355 +1,507 @@
-import { useEffect, useState } from 'react';
-import { db, auth } from '../firebase/config';
+import { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { QRCodeSVG } from 'qrcode.react';
-import { Calendar, MapPin, Check, Copy, Share2, Users, RefreshCw, Crosshair } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
-import { generateRollingToken, getCurrentWindow, TOKEN_WINDOW_SECONDS } from '../utils/tokenUtils';
-
-// Leaflet Imports
+import { db, auth } from '../firebase/config';
+import { 
+  Calendar, 
+  Clock, 
+  MapPin, 
+  LocateFixed, 
+  PlusCircle, 
+  Loader2, 
+  ArrowLeft, 
+  Sparkles,
+  Timer,
+  Sliders
+} from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
-// Fix for default Leaflet marker icons in Vite
+// Fix Leaflet's default marker icon paths in React / Bundlers
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-function LocationPicker({ position, setPosition }) {
+// Helper 1: Re-center and smoothly fly map when location updates
+function RecenterMap({ center }) {
   const map = useMap();
-  
+  useEffect(() => {
+    if (center && !isNaN(center[0]) && !isNaN(center[1])) {
+      map.flyTo(center, 15, { duration: 1.2 });
+    }
+  }, [center, map]);
+  return null;
+}
+
+// Helper 2: Handle user clicks directly on the Leaflet map
+function LocationPickerMarker({ position, onLocationChange }) {
   useMapEvents({
     click(e) {
-      setPosition([e.latlng.lat, e.latlng.lng]);
+      onLocationChange(e.latlng.lat, e.latlng.lng);
     },
   });
 
-  useEffect(() => {
-    if (position) {
-      map.flyTo(position, map.getZoom());
-    }
-  }, [position, map]);
-
-  return position === null ? null : (
-    <Marker position={position}></Marker>
-  );
+  if (!position || isNaN(position[0]) || isNaN(position[1])) return null;
+  return <Marker position={position} />;
 }
+
+import { useEffect } from 'react';
 
 export default function CreateEvent() {
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [error, setError] = useState('');
+
+  // Form states
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  
-  // Default coordinates
-  const [position, setPosition] = useState([31.4808, 76.1991]);
-  const [radiusMeters, setRadiusMeters] = useState(200);
-  
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [createdEvent, setCreatedEvent] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [latitude, setLatitude] = useState('28.6139');
+  const [longitude, setLongitude] = useState('77.2090');
+  const [radiusMeters, setRadiusMeters] = useState(100);
 
-  const [currentToken, setCurrentToken] = useState('');
-  const [currentWindow, setCurrentWindow] = useState(0);
-  const [secondsRemaining, setSecondsRemaining] = useState(TOKEN_WINDOW_SECONDS);
-
-  const handleGetCurrentLocation = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setPosition([pos.coords.latitude, pos.coords.longitude]);
-        },
-        (error) => {
-          alert("Could not get current location: " + error.message);
-        },
-        { enableHighAccuracy: true }
-      );
+  // Automatic Duration Calculation across Start Date/Time and End Date/Time
+  const durationText = useMemo(() => {
+    if (!startDate || !startTime || !endDate || !endTime) {
+      return 'Set both dates & times';
     }
+
+    const startDateTime = new Date(`${startDate}T${startTime}`);
+    const endDateTime = new Date(`${endDate}T${endTime}`);
+
+    const diffMs = endDateTime.getTime() - startDateTime.getTime();
+
+    if (isNaN(diffMs)) return 'Invalid date/time';
+    if (diffMs <= 0) {
+      return 'End must be after start';
+    }
+
+    const totalMinutes = Math.floor(diffMs / (1000 * 60));
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const mins = totalMinutes % 60;
+
+    const parts = [];
+    if (days > 0) parts.push(`${days} day${days > 1 ? 's' : ''}`);
+    if (hours > 0) parts.push(`${hours} hr${hours > 1 ? 's' : ''}`);
+    if (mins > 0 || parts.length === 0) parts.push(`${mins} min${mins > 1 ? 's' : ''}`);
+
+    return parts.join(' ');
+  }, [startDate, endDate, startTime, endTime]);
+
+  // GPS Auto-fetch & Map Pan
+  const handleFetchCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLatitude(pos.coords.latitude.toFixed(6));
+        setLongitude(pos.coords.longitude.toFixed(6));
+        setLocating(false);
+      },
+      (err) => {
+        setError(`Location access failed: ${err.message}`);
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   };
 
-  const handleSubmit = async (e) => {
+  const handleMapClick = (lat, lng) => {
+    setLatitude(lat.toFixed(6));
+    setLongitude(lng.toFixed(6));
+  };
+
+ const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
+
+    if (!auth.currentUser) {
+      setError('You must be signed in to create an event.');
+      return;
+    }
+
+    if (durationText.includes('End must be after start') || durationText.includes('Set both')) {
+      setError('Please provide valid start and end dates/times.');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const user = auth.currentUser;
-      if (!user) {
-        alert("You must be logged in to create an event.");
-        navigate('/login');
-        return;
-      }
+      const generatedEventId = `EVT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-      const eventId = 'EV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-      
-      const newEvent = {
-        eventId,
-        name,
-        description,
-        organizerId: user.uid,
-        organizerEmail: user.email || '',
-        status: 'active',
-        latitude: parseFloat(position[0].toFixed(6)),
-        longitude: parseFloat(position[1].toFixed(6)),
-        radiusMeters: parseInt(radiusMeters, 10),
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date(endTime).toISOString(),
-        createdAt: serverTimestamp(),
-      };
+      // Convert start and end into ISO strings and milliseconds for accurate filtering
+      const startDateTimeObj = new Date(`${startDate}T${startTime}`);
+      const endDateTimeObj = new Date(`${endDate}T${endTime}`);
 
-      await addDoc(collection(db, 'events'), newEvent);
-      setCreatedEvent(newEvent);
+      await addDoc(collection(db, 'events'), {
+        eventId: generatedEventId,
+        organizerId: auth.currentUser.uid,
+        name: name.trim(),
+        description: description.trim(),
+        date: startDate, // Dashboard compatibility
+        startDate,
+        endDate,
+        startTime,
+        endTime,
+        // Standard millisecond timestamps taaki Dashboard filter turant pakad le
+        startTimestamp: startDateTimeObj.getTime(),
+        endTimestamp: endDateTimeObj.getTime(),
+        duration: durationText,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        radiusMeters: parseInt(radiusMeters, 10) || 100,
+        archived: false,
+        createdAt: Date.now(), // Realtime timestamp for instant sorting
+      });
+
+      // Successful save hone ke baad dashboard redirect
+      navigate('/dashboard');
     } catch (err) {
-      console.error(err);
-      alert("Failed to create event: " + err.message);
+      console.error('Error creating event:', err);
+      setError(err.message || 'Failed to create event. Check Firestore permissions.');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (!createdEvent) return;
-
-    const updateToken = async () => {
-      const win = getCurrentWindow();
-      const token = await generateRollingToken(createdEvent.eventId, win);
-      setCurrentWindow(win);
-      setCurrentToken(token);
-    };
-
-    updateToken();
-
-    const interval = setInterval(() => {
-      const nowSec = Math.floor(Date.now() / 1000);
-      const remaining = TOKEN_WINDOW_SECONDS - (nowSec % TOKEN_WINDOW_SECONDS);
-      setSecondsRemaining(remaining);
-
-      if (remaining === TOKEN_WINDOW_SECONDS) {
-        updateToken();
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [createdEvent]);
-
-  const dynamicUrl = createdEvent && currentToken
-    ? `${window.location.origin}/verify-location/${createdEvent.eventId}?token=${currentToken}&window=${currentWindow}`
-    : '';
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(dynamicUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleWhatsAppShare = () => {
-    const message = `Check in for the event using this secure rolling link: ${dynamicUrl}`;
-    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`, '_blank');
-  };
+  const mapCenter = useMemo(() => {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+    return [isNaN(lat) ? 28.6139 : lat, isNaN(lng) ? 77.2090 : lng];
+  }, [latitude, longitude]);
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      {!createdEvent ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 md:p-8">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-2">
-            <Calendar className="h-6 w-6 text-primary" /> Create New Event
-          </h2>
+    <div className="min-h-screen w-full bg-[#08080a] text-slate-100 selection:bg-orange-500 selection:text-white py-10 px-4 sm:px-6 lg:px-8">
+      {/* Background Glow */}
+      <div className="fixed top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-orange-600/10 rounded-full blur-[160px] pointer-events-none" />
+
+      <div className="relative max-w-4xl mx-auto">
+        
+        {/* Back Button */}
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-slate-400 hover:text-white text-xs font-semibold mb-6 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>Back to Dashboard</span>
+        </button>
+
+        {/* Main Glass Card */}
+        <div className="relative rounded-3xl bg-white/[0.035] backdrop-blur-2xl border border-white/10 p-6 sm:p-10 shadow-[0_20px_50px_-15px_rgba(0,0,0,0.8)]">
+          
+          {/* Header */}
+          <div className="mb-8 border-b border-white/5 pb-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-400 text-xs font-mono mb-3">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Geofence Protocol Config</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              Create Geofenced Event
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-400 mt-1">
+              Select boundaries on the interactive map, adjust allowed radius, and set operational timelines.
+            </p>
+          </div>
+
+          {/* Error Banner */}
+          {error && (
+            <div className="mb-6 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="col-span-1 md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Event Name</label>
+            
+            {/* Event Name */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Event Name *
+              </label>
+              <input
+                type="text"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g., ProofPoint Web3 Summit 2026"
+                className="w-full px-4 py-2.5 bg-white/[0.03] text-slate-100 placeholder-slate-500 border border-white/10 rounded-xl text-xs transition-all duration-200 outline-none focus:bg-white/[0.06] focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20 focus:shadow-[0_0_20px_-3px_rgba(249,115,22,0.3)]"
+              />
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Description (Optional)
+              </label>
+              <textarea
+                rows={2}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Short summary or attendee requirements..."
+                className="w-full px-4 py-2.5 bg-white/[0.03] text-slate-100 placeholder-slate-500 border border-white/10 rounded-xl text-xs transition-all duration-200 outline-none focus:bg-white/[0.06] focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20 focus:shadow-[0_0_20px_-3px_rgba(249,115,22,0.3)] resize-none"
+              />
+            </div>
+
+            {/* Timings: Start Date, Start Time, End Date, End Time */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              
+              {/* Start Date */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Start Date *
+                </label>
+                <div className="relative">
+                  <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="date"
+                    required
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white/[0.03] text-slate-100 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
+              </div>
+
+              {/* Start Time */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Start Time *
+                </label>
+                <div className="relative">
+                  <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="time"
+                    required
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white/[0.03] text-slate-100 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
+              </div>
+
+              {/* End Date */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  End Date *
+                </label>
+                <div className="relative">
+                  <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="date"
+                    required
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white/[0.03] text-slate-100 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
+              </div>
+
+              {/* End Time */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  End Time *
+                </label>
+                <div className="relative">
+                  <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="time"
+                    required
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white/[0.03] text-slate-100 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
+              </div>
+
+            </div>
+
+            {/* Read-Only Automatic Duration Bar */}
+            <div>
+              <label className="block text-xs font-semibold text-orange-400 mb-1.5 flex items-center justify-between">
+                <span>Calculated Event Duration</span>
+                <span className="text-[10px] text-slate-500 font-mono tracking-wider">AUTO-COMPUTED</span>
+              </label>
+              <div className="relative">
+                <Timer className="w-4 h-4 text-orange-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. System Design Lecture"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
-                />
-              </div>
-
-              <div className="col-span-1 md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Brief details about the event..."
-                  rows={2}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
-                <input
-                  type="datetime-local"
-                  required
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">End Time</label>
-                <input
-                  type="datetime-local"
-                  required
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none"
+                  readOnly
+                  tabIndex={-1}
+                  value={durationText}
+                  className={`w-full pl-10 pr-4 py-2.5 rounded-xl text-xs font-mono font-medium select-none cursor-not-allowed border transition-colors ${
+                    durationText.includes('End must be after start')
+                      ? 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                      : durationText.includes('Set both')
+                      ? 'bg-white/[0.02] border-white/10 text-slate-500'
+                      : 'bg-orange-500/10 border-orange-500/30 text-orange-300 shadow-sm shadow-orange-500/10'
+                  }`}
                 />
               </div>
             </div>
 
-            <div className="border-t border-gray-200 pt-6 mt-6">
-              <div className="flex justify-between items-end mb-4">
+            {/* Interactive Map & Geofence Perimeter */}
+            <div className="border-t border-white/5 pt-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <div>
-                  <h3 className="text-md font-semibold text-gray-900 flex items-center gap-2 mb-1">
-                    <MapPin className="h-5 w-5 text-primary" /> Interactive Geofence Map
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-orange-400" /> Interactive Geofence Map
                   </h3>
-                  <p className="text-xs text-gray-500">Click on the map to set the center point.</p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Click anywhere on the map or tap the button to fly to your live GPS.
+                  </p>
                 </div>
+
                 <button
                   type="button"
-                  onClick={handleGetCurrentLocation}
-                  className="text-xs bg-indigo-50 text-primary hover:bg-indigo-100 font-semibold px-3 py-2 rounded-lg border border-indigo-200 flex items-center gap-1"
+                  onClick={handleFetchCurrentLocation}
+                  disabled={locating}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/30 text-orange-300 text-xs font-semibold transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
                 >
-                  <Crosshair className="w-3.5 h-3.5" /> Locate Me
+                  {locating ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <LocateFixed className="w-3.5 h-3.5" />
+                  )}
+                  <span>{locating ? 'Detecting GPS...' : 'Use My Current Location'}</span>
                 </button>
               </div>
 
-              {/* Leaflet Map Integration */}
-              <div className="h-64 w-full rounded-xl overflow-hidden border border-gray-300 mb-4 z-0 relative">
-                <MapContainer 
-                  center={position} 
-                  zoom={16} 
-                  scrollWheelZoom={true} 
-                  style={{ height: '100%', width: '100%' }}
+              {/* Map Preview Container with Auto Recenter */}
+              <div className="relative h-72 sm:h-80 w-full rounded-2xl overflow-hidden border border-white/10 mb-5 z-0">
+                <MapContainer
+                  center={mapCenter}
+                  zoom={15}
+                  scrollWheelZoom={false}
+                  className="h-full w-full"
                 >
                   <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   />
-                  <LocationPicker position={position} setPosition={setPosition} />
-                  <Circle 
-                    center={position} 
-                    radius={radiusMeters} 
-                    pathOptions={{ color: '#4f46e5', fillColor: '#4f46e5', fillOpacity: 0.2 }} 
+                  {/* Automatically fly to new coordinates */}
+                  <RecenterMap center={mapCenter} />
+                  
+                  {/* Click to change marker */}
+                  <LocationPickerMarker
+                    position={mapCenter}
+                    onLocationChange={handleMapClick}
+                  />
+
+                  {/* Circular visual geofence boundary */}
+                  <Circle
+                    center={mapCenter}
+                    radius={parseInt(radiusMeters, 10) || 50}
+                    pathOptions={{
+                      color: '#f97316',
+                      fillColor: '#f97316',
+                      fillOpacity: 0.25,
+                      weight: 2,
+                    }}
                   />
                 </MapContainer>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Latitude</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={position[0].toFixed(6)}
-                    readOnly
-                    className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-600 outline-none"
-                  />
+              {/* Radius Slider Bar (Line aage-peeche karne wala feature) */}
+              <div className="mb-6 p-4 rounded-2xl bg-white/[0.03] border border-white/10">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Sliders className="w-3.5 h-3.5 text-orange-400" />
+                    Allowed Check-in Radius (Meters)
+                  </span>
+                  <span className="text-xs font-mono font-bold text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded-md">
+                    {radiusMeters} meters
+                  </span>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Longitude</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={position[1].toFixed(6)}
-                    readOnly
-                    className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-600 outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Allowed Radius (Meters)</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="range"
-                      min="10"
-                      max="1000"
-                      step="10"
-                      value={radiusMeters}
-                      onChange={(e) => setRadiusMeters(Number(e.target.value))}
-                      className="flex-1 accent-primary"
-                    />
-                    <span className="text-sm font-semibold text-gray-700 w-12 text-right">{radiusMeters}m</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 px-4 rounded-lg text-white font-medium bg-primary hover:bg-indigo-700 disabled:bg-indigo-400 transition mt-4"
-            >
-              {loading ? 'Creating Event...' : 'Create & Generate Dynamic QR'}
-            </button>
-          </form>
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center max-w-xl mx-auto">
-          <div className="inline-block p-3 bg-green-50 rounded-full mb-3">
-            <Check className="h-8 w-8 text-green-600" />
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-1">Live Dynamic QR Active</h2>
-          <p className="text-xs text-gray-500 mb-6">
-            Anti-spoofing active. This QR code rotates automatically every {TOKEN_WINDOW_SECONDS} seconds.
-          </p>
-
-          <div className="flex flex-col items-center justify-center mb-6 p-6 bg-gray-50 rounded-2xl border border-gray-200 inline-block w-full">
-            {dynamicUrl && <QRCodeSVG value={dynamicUrl} size={220} level="H" />}
-            <div className="w-full max-w-xs mt-4">
-              <div className="flex justify-between items-center text-xs font-semibold text-gray-500 mb-1">
-                <span className="flex items-center gap-1">
-                  <RefreshCw className="w-3 h-3 animate-spin text-primary" /> Rolling Token
-                </span>
-                <span>Refreshes in {secondsRemaining}s</span>
-              </div>
-              <div className="w-full bg-gray-200 h-1.5 rounded-full overflow-hidden">
-                <div 
-                  className="bg-primary h-full transition-all duration-1000 ease-linear"
-                  style={{ width: `${(secondsRemaining / TOKEN_WINDOW_SECONDS) * 100}%` }}
+                
+                {/* Range Slider Track */}
+                <input
+                  type="range"
+                  min="20"
+                  max="1500"
+                  step="10"
+                  value={radiusMeters}
+                  onChange={(e) => setRadiusMeters(Number(e.target.value))}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-orange-500 transition-all"
                 />
+                
+                <div className="flex justify-between text-[10px] font-mono text-slate-500 mt-1.5">
+                  <span>20m (Room / Hall)</span>
+                  <span>500m (Campus)</span>
+                  <span>1500m (Wide Area)</span>
+                </div>
+              </div>
+
+              {/* Exact Lat & Long Inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Latitude
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={latitude}
+                    onChange={(e) => setLatitude(e.target.value)}
+                    placeholder="28.6139"
+                    className="w-full px-3.5 py-2 bg-white/[0.03] text-slate-100 placeholder-slate-600 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Longitude
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={longitude}
+                    onChange={(e) => setLongitude(e.target.value)}
+                    placeholder="77.2090"
+                    className="w-full px-3.5 py-2 bg-white/[0.03] text-slate-100 placeholder-slate-600 border border-white/10 rounded-xl text-xs outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/20"
+                  />
+                </div>
               </div>
             </div>
-          </div>
-          
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row gap-3">
+
+            {/* Submit Button */}
+            <div className="pt-4">
               <button
-                type="button"
-                onClick={handleWhatsAppShare}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 transition shadow-sm"
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-[0.99] text-white text-xs font-semibold border border-orange-400/40 shadow-lg shadow-orange-500/25 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-orange-500/40 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                <Share2 className="w-4 h-4" /> Share via WhatsApp
-              </button>
-              
-              <button
-                type="button"
-                onClick={handleCopyLink}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-gray-100 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-200 transition border border-gray-300"
-              >
-                {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
-                {copied ? 'Copied Link!' : 'Copy Link'}
+                {loading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <PlusCircle className="w-4 h-4" />
+                    <span>Deploy Geofenced Event</span>
+                  </>
+                )}
               </button>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Link
-                to={`/event-attendance/${createdEvent.eventId}`}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
-              >
-                <Users className="w-4 h-4" /> View Live Roster
-              </Link>
-            </div>
-          </div>
+          </form>
+
         </div>
-      )}
+      </div>
     </div>
   );
 }
