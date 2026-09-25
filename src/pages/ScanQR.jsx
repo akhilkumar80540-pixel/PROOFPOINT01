@@ -265,12 +265,24 @@ const submitFinalAttendance = async () => {
     }
   };
   // --- FUNCTION 2: SCANNER HANDLER (Sirf QR decode karke Engine ko dega) ---
+  // --- FUNCTION 2: SCANNER HANDLER ---
   const onScanSuccess = async (decodedText) => {
     try {
       await stopScanner();
       
       let targetEventId = null;
-      const cleanText = decodedText.trim();
+      let cleanText = decodedText.trim();
+
+      // NAYA LOGIC: Agar URL scan hua hai, toh usme se sirf 'token' nikal lo
+      try {
+        const urlObj = new URL(cleanText);
+        const tokenFromUrl = urlObj.searchParams.get('token');
+        if (tokenFromUrl) {
+          cleanText = tokenFromUrl; // Ab cleanText me URL ki jagah sirf Base64 token hai
+        }
+      } catch (urlError) {
+        // Agar yeh URL nahi hai (jaise manual text ya purana QR), toh is error ko ignore karo aur aage badho
+      }
 
       // Decode logic (Base64 ya direct text)
       try {
@@ -282,16 +294,20 @@ const submitFinalAttendance = async () => {
           const parsedData = JSON.parse(cleanText);
           targetEventId = parsedData?.eventId || parsedData?.id;
         } catch (err) {
-          // Fallback: Agar kisi ne URL ya raw text scan kiya hai
+          // Fallback: Agar kisi ne raw text scan kiya hai
           targetEventId = cleanText;
         }
       }
 
       // Scanner ne ID nikal li, ab core engine ko pass kar do
-      await processVerification(targetEventId);
+      if (targetEventId) {
+        await processVerification(targetEventId);
+      } else {
+        setError('Invalid QR Code or Token missing.');
+      }
 
     } catch (err) {
-      setError('Failed to read QR Code. Try Manual ID.');
+      setError('Failed to read QR Code. Try  kare by Manual ID . thank u :)');
     }
   };
   return (
