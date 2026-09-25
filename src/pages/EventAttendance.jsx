@@ -145,24 +145,22 @@ const filteredAttendees = attendees.filter((a) => {
 
   // 3. Dynamic Anti-Spoof Rolling Token Generator (Refreshes every 15s)
   useEffect(() => {
-    const generateToken = () => {
-      const randomNonce = Math.random().toString(36).substring(2, 9);
-      const timestamp = Date.now();
-      const payload = JSON.stringify({
-        eventId: eventData?.eventId || id,
-        lat: eventData?.latitude,
-        lng: eventData?.longitude,
-        radius: eventData?.radiusMeters || 100,
-        nonce: randomNonce,
-        ts: timestamp
-      });
-     const encodedData = btoa(payload);
-// Yeh aapki website ka pura link bana dega (jaise: https://proofpoint1.vercel.app/scan?token=...)
-const scanUrl = `${window.location.origin}/scan?token=${encodedData}`;
-setRollingToken(scanUrl);
-
-setCountdown(15);
-    };
+   const generateToken = () => {
+  const randomNonce = Math.random().toString(36).substring(2, 9);
+  
+  // NAYA CHOTA PAYLOAD: Sirf ID aur Timestamp
+  const payload = JSON.stringify({
+    eventId: eventData?.eventId || id,
+    ts: Date.now(),
+    nonce: randomNonce
+  });
+  
+  const encodedData = btoa(payload);
+  const scanUrl = `${window.location.origin}/scan?token=${encodedData}`;
+  setRollingToken(scanUrl);
+  
+  setCountdown(15);
+};
 
     generateToken();
     const interval = setInterval(generateToken, 15000);
