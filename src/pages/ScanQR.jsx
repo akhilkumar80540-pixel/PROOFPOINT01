@@ -236,11 +236,13 @@ const handleDownloadPass = async () => {
 const submitFinalAttendance = async () => {
     if (!attendeeName.trim() || !attendeeIdNum.trim()) return;
     setSubmitting(true);
-    
+
     try {
-      const currentUserId = auth.currentUser?.uid || 'anonymous_user';
+      // Check if auth is loaded, otherwise use anonymous
+      const currentUserId = auth?.currentUser?.uid || 'anonymous_user';
       const proofId = `PRF-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-      
+
+      // Firebase me data save karna (Make sure 'proofs' wahi collection hai jo dashboard use karta hai)
       await addDoc(collection(db, 'proofs'), {
         proofId,
         eventId: verificationDetails.eventId,
@@ -256,19 +258,23 @@ const submitFinalAttendance = async () => {
         verified: true,
       });
 
-      // Navigate to Proof page (Wahan download ka option denge)
+      console.log("Data saved successfully to Firebase!");
+      
+      // Navigate to Proof page (Ensure App.jsx me iska route '/verify' hi ho)
       navigate(`/verify?id=${proofId}`);
-    } catch (err) {
-      setError('Failed to save attendance.');
+
+    } catch (error) {
+      console.error("Firebase save error: ", error);
+      alert("Error saving data: " + error.message); // Ye popup batayega ki asli problem kahan hai
     } finally {
-      setSubmitting(false);
+      setSubmitting(false); // Button ko wapas normal state me laane ke liye
     }
   };
   // --- FUNCTION 2: SCANNER HANDLER (Sirf QR decode karke Engine ko dega) ---
   // --- FUNCTION 2: SCANNER HANDLER ---
   const onScanSuccess = async (decodedText) => {
     try {
-      await stopScanner();
+     
       
       let targetEventId = null;
       let cleanText = decodedText.trim();
@@ -422,17 +428,17 @@ const submitFinalAttendance = async () => {
                       value={attendeeName}
                       onChange={(e) => setAttendeeName(e.target.value)}
                       className="w-full bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500"
-                      placeholder="e.g. Aryan Kumar"
+                      placeholder="e.g. alice "
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">Attendee ID / Roll No.</label>
+                    <label className="block text-sm text-gray-400 mb-1">Attendee ID / Roll No./ID </label>
                     <input 
                       type="text" 
                       value={attendeeIdNum}
                       onChange={(e) => setAttendeeIdNum(e.target.value)}
                       className="w-full bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500"
-                      placeholder="e.g. CS-2023-45"
+                      placeholder="e.g. 12...11"
                     />
                   </div>
                 </div>
