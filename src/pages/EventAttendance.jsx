@@ -156,8 +156,12 @@ const filteredAttendees = attendees.filter((a) => {
         nonce: randomNonce,
         ts: timestamp
       });
-      setRollingToken(btoa(payload));
-      setCountdown(15);
+     const encodedData = btoa(payload);
+// Yeh aapki website ka pura link bana dega (jaise: https://proofpoint1.vercel.app/scan?token=...)
+const scanUrl = `${window.location.origin}/scan?token=${encodedData}`;
+setRollingToken(scanUrl);
+
+setCountdown(15);
     };
 
     generateToken();
